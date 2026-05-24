@@ -1,0 +1,145 @@
+{
+  "info": {
+    "_postman_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "name": "Forgeshift WSO2 -> Kong Konnect Migration Service",
+    "description": "Reads WSO2 snapshots from the discovery service's MongoDB collections, reads Konnect credentials from the profile-config service's MongoDB collections, translates to Kong entities, and deploys via the Konnect Admin API.\n\nBase URL: http://localhost:8083/migration/v1 (set via baseUrl variable).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8083/migration/v1", "type": "string" },
+    { "key": "companyName", "value": "probestack", "type": "string" },
+    { "key": "wso2Tenant", "value": "carbon.super", "type": "string" },
+    { "key": "discoveryId", "value": "", "type": "string" },
+    { "key": "kongProfileName", "value": "primary", "type": "string" },
+    { "key": "migrationJobId", "value": "", "type": "string" },
+    { "key": "tenantHeader", "value": "probestack", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Health & Metadata",
+      "item": [
+        { "name": "Health", "request": { "method": "GET", "url": { "raw": "{{baseUrl}}/actuator/health", "host": ["{{baseUrl}}"], "path": ["actuator", "health"] } } },
+        { "name": "Swagger UI", "request": { "method": "GET", "url": { "raw": "{{baseUrl}}/swagger-ui.html", "host": ["{{baseUrl}}"], "path": ["swagger-ui.html"] } } },
+        { "name": "OpenAPI spec", "request": { "method": "GET", "url": { "raw": "{{baseUrl}}/v3/api-docs", "host": ["{{baseUrl}}"], "path": ["v3", "api-docs"] } } }
+      ]
+    },
+    {
+      "name": "Migrate",
+      "item": [
+        {
+          "name": "POST /migrations  (full migration: apis + apps + subs)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const j = pm.response.json();",
+                  "    if (j.id) pm.collectionVariables.set('migrationJobId', j.id);",
+                  "    console.log('Migration job:', j.id, 'state:', j.state);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Partner-Id", "value": "{{tenantHeader}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"resourceTypes\": [\"apis\", \"applications\", \"subscriptions\"],\n  \"dryRun\": false,\n  \"userEmail\": \"sdmoh@local\"\n}" },
+            "url": { "raw": "{{baseUrl}}/migrations", "host": ["{{baseUrl}}"], "path": ["migrations"] },
+            "description": "Start a migration over the LATEST discovery snapshot for each requested resource type. Pass discoveryId in the body to pin to a specific snapshot."
+          }
+        },
+        {
+          "name": "POST /wso2/migrate/apis  (apis only)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Partner-Id", "value": "{{tenantHeader}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"userEmail\": \"sdmoh@local\"\n}" },
+            "url": { "raw": "{{baseUrl}}/wso2/migrate/apis", "host": ["{{baseUrl}}"], "path": ["wso2", "migrate", "apis"] }
+          }
+        },
+        {
+          "name": "POST /wso2/migrate/subscriptions  (apps + subs only)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Partner-Id", "value": "{{tenantHeader}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"userEmail\": \"sdmoh@local\"\n}" },
+            "url": { "raw": "{{baseUrl}}/wso2/migrate/subscriptions", "host": ["{{baseUrl}}"], "path": ["wso2", "migrate", "subscriptions"] }
+          }
+        },
+        {
+          "name": "POST /wso2/migrate/dry-run  (translate-only, no Konnect writes)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Partner-Id", "value": "{{tenantHeader}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"resourceTypes\": [\"apis\"],\n  \"userEmail\": \"sdmoh@local\"\n}" },
+            "url": { "raw": "{{baseUrl}}/wso2/migrate/dry-run", "host": ["{{baseUrl}}"], "path": ["wso2", "migrate", "dry-run"] },
+            "description": "Translate snapshots into Kong entities and compute the diff WITHOUT writing to Konnect. The MigrationJob ends in DRY_RUN_DONE; the report holds the diff summary."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Jobs",
+      "item": [
+        {
+          "name": "GET /migrations/{id}",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Partner-Id", "value": "{{tenantHeader}}" }],
+            "url": { "raw": "{{baseUrl}}/migrations/{{migrationJobId}}", "host": ["{{baseUrl}}"], "path": ["migrations", "{{migrationJobId}}"] }
+          }
+        },
+        {
+          "name": "GET /migrations/{id}/report",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Partner-Id", "value": "{{tenantHeader}}" }],
+            "url": { "raw": "{{baseUrl}}/migrations/{{migrationJobId}}/report", "host": ["{{baseUrl}}"], "path": ["migrations", "{{migrationJobId}}", "report"] }
+          }
+        },
+        {
+          "name": "GET /migrations  (list, filtered)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Partner-Id", "value": "{{tenantHeader}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/migrations?companyName={{companyName}}&tenant={{wso2Tenant}}&page=0&size=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["migrations"],
+              "query": [
+                { "key": "companyName", "value": "{{companyName}}" },
+                { "key": "tenant", "value": "{{wso2Tenant}}" },
+                { "key": "state", "value": "COMPLETED", "disabled": true },
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "20" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "DELETE /migrations/{id}",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "X-Partner-Id", "value": "{{tenantHeader}}" }],
+            "url": { "raw": "{{baseUrl}}/migrations/{{migrationJobId}}", "host": ["{{baseUrl}}"], "path": ["migrations", "{{migrationJobId}}"] }
+          }
+        }
+      ]
+    }
+  ]
+}

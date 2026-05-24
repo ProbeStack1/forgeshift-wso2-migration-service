@@ -1,0 +1,57 @@
+package com.forgeshift.wso2.migration.reader;
+
+import com.forgeshift.wso2.migration.config.MigrationProperties;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.bson.Document;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+
+/**
+ * Reads Kong Konnect profiles written by the profile-config service from the
+ * {@code kong_konnect_profiles} collection. Falls back to the static
+ * {@code forgeshift.migration.konnect.*-fallback} config when no profile
+ * matches the requested (companyName, profileName).
+ *
+ * Uses raw {@code org.bson.Document} reads so we don't need to share the
+ * profile-config domain classes across services.
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class KongKonnectProfileReader {
+
+    private final MongoTemplate mongoTemplate;
+    private final MigrationProperties props;
+
+    public KongKonnectCredentials resolve(String companyName, String profileName) {
+        if (StringUtils.hasText(companyName)) {
+            String desiredName = StringUtils.hasText(profileName) ? profileName : "primary";
+            Query q = Query.query(Criteria.where("companyName").is(companyName)
+                    .and("profileName").is(desiredName));
+            Document doc = mongoTemplate.findOne(q, Document.class,
+                    props.getKongKonnectProfilesCollection());
+            if (doc != null) {
+                log.debug("Using Kong Konnect profile (company={}, profileName={})", companyName, desiredName);
+                return KongKonnectCredentials.builder()
+                        .source("profile")
+                        .konnectBaseUrl(doc.getString("konnectBaseUrl"))
+                        .konnectAccessToken(doc.getString("konnectAccessToken"))
+                        .controlPlaneId(doc.getString("controlPlaneId"))
+                        .region(doc.getString("region"))
+                        .build();
+            }
+        }
+        log.debug("No Kong Konnect profile found - using static fallback");
+        return KongKonnectCredentials.builder()
+                .source("static")
+                .konnectBaseUrl(props.getKonnect().getBaseUrlFallback())
+                .konnectAccessToken(props.getKonnect().getAccessTokenFallback())
+                .controlPlaneId(props.getKonnect().getControlPlaneIdFallback())
+                .region("us")
+                .build();
+    }
+}

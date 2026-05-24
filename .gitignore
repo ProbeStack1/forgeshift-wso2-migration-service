@@ -1,0 +1,9 @@
+target/
+.idea/
+*.iml
+.vscode/
+*.log
+logs/
+.env
+gcp-key.json
+service-account*.json

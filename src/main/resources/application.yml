@@ -1,0 +1,93 @@
+spring:
+  application:
+    name: forgeshift-wso2-migration-service
+  config:
+    import:
+      - optional:file:.env[.properties]
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+  data:
+    mongodb:
+      uri: ${MONGODB_URI:mongodb+srv://java-app:LszhHwotDeKBfG3a@probestack-nonprod.hdggqx.mongodb.net/probestack-wso2-forgeshift?appName=Probestack-nonprod}
+      database: ${MONGODB_DATABASE:probestack-wso2-forgeshift}
+      auto-index-creation: true
+  jackson:
+    default-property-inclusion: non_null
+
+server:
+  port: ${SERVER_PORT:8083}
+  servlet:
+    context-path: /migration/v1
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when_authorized
+      probes:
+        enabled: true
+
+logging:
+  level:
+    com.forgeshift: INFO
+    org.springframework.web: INFO
+    org.mongodb.driver: WARN
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+
+forgeshift:
+  migration:
+    # Collections written by THIS service
+    jobs-collection: migration_jobs
+    entity-mappings-collection: entity_mappings
+    reports-collection: migration_reports
+    audit-collection: migration_audit_info
+
+    # Collections READ from discovery service
+    discovery-collection-prefix: discovery_wso2_
+    discovery-revisions-collection: discovery_revisions
+
+    # Collections READ from profile-config service
+    wso2-profiles-collection: profiles
+    kong-konnect-profiles-collection: kong_konnect_profiles
+
+    # Translation defaults
+    translation:
+      default-throttle-rpm: ${TRANSLATION_DEFAULT_THROTTLE_RPM:10000}
+      default-timeout-ms: ${TRANSLATION_DEFAULT_TIMEOUT_MS:60000}
+      tag-prefix: wso2-source-id
+      migrated-by-tag: migrated-by:forgeshift-wso2-migrator
+      # Throttling tier name → requests per minute. Mirrors the Archive Python script.
+      throttling-tier-map:
+        Bronze: 10
+        Silver: 50
+        Gold: 200
+        Platinum: 500
+        Unlimited: 10000
+
+    # Konnect API tuning
+    konnect:
+      base-url-fallback: ${KONNECT_BASE_URL:https://us.api.konghq.com}
+      access-token-fallback: ${KONNECT_ACCESS_TOKEN:kpat_2d2rITsYZEege6CyD989DcS6nLTGDiRe3U2VSZZBfEzAQ7VvR}
+      control-plane-id-fallback: ${KONNECT_CONTROL_PLANE_ID:43dbc26e-23c1-4443-982a-96321e6d0dfb}
+      request-timeout-seconds: 30
+      trust-self-signed: ${KONNECT_TRUST_SELF_SIGNED:false}
+      # Path templates under {base-url}/v2/control-planes/{cp-id}/core-entities/...
+      services-path: /services
+      routes-path: /routes
+      upstreams-path: /upstreams
+      targets-path: /upstreams/{upstreamId}/targets
+      consumers-path: /consumers
+      plugins-path: /plugins
+
+    tenant:
+      header-name: ${TENANT_HEADER:X-Partner-Id}
+      default-tenant: ${DEFAULT_TENANT:probestack}
