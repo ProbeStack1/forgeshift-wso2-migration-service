@@ -17,7 +17,7 @@ spring:
 server:
   port: ${SERVER_PORT:8083}
   servlet:
-    context-path: /migration/v1
+    context-path: /wso2/migration/v1
 
 management:
   endpoints:
