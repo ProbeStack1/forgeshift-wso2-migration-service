@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
-    "name": "Forgeshift WSO2 -> Kong Konnect Migration Service",
-    "description": "Reads WSO2 snapshots from the discovery service's MongoDB collections, reads Konnect credentials from the profile-config service's MongoDB collections, translates to Kong entities, and deploys via the Konnect Admin API.\n\nBase URL: http://localhost:8083/wso2/migration/v1 (set via baseUrl variable).",
+    "name": "Forgeshift WSO2 → Kong Konnect Migration Service",
+    "description": "Translates WSO2 discovery snapshots into Kong entities and deploys them via the Konnect Admin API.\n\nBase URL: http://localhost:8083/wso2/migration/v1 (set via baseUrl variable).\n\n## Two ways to migrate\n\n**Bulk** (POST /migrations): one call, every resource type at once. Use for first-time migrations of a tenant.\n\n**Per-resource (Apigee-style)** (POST /konnect/wso2/{type}): pass an explicit list of WSO2 `sourceId`s. Use for selective re-runs or when a specific API needs re-deploy.\n\n## Sync vs async\n\nEvery POST blocks by default until the migration reaches a terminal state and returns `{ job, report }` in one response — no follow-up GET needed.\n\nAppend `?async=true` to keep the legacy fire-and-forget behaviour: returns the freshly-created PENDING job (201) and the migration runs in the background. Useful for very long runs where you'd hit an HTTP timeout otherwise.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -11,6 +11,10 @@
     { "key": "wso2Tenant", "value": "carbon.super", "type": "string" },
     { "key": "discoveryId", "value": "", "type": "string" },
     { "key": "kongProfileName", "value": "primary", "type": "string" },
+    { "key": "kongRegion", "value": "us", "type": "string" },
+    { "key": "kongCtrlPlanId", "value": "78ac8c8b-74a8-4338-875f-2ccaee19a52c", "type": "string" },
+    { "key": "userEmail", "value": "sdmoh@probestack.io", "type": "string" },
+    { "key": "requestSource", "value": "API", "type": "string" },
     { "key": "migrationJobId", "value": "", "type": "string" },
     { "key": "tenantHeader", "value": "probestack", "type": "string" }
   ],
@@ -24,20 +28,28 @@
       ]
     },
     {
-      "name": "Migrate",
+      "name": "Bulk migrations",
+      "description": "POST /migrations and the legacy shortcuts. Sync by default — response is `{ job, report }`. Append `?async=true` for fire-and-forget.",
       "item": [
         {
-          "name": "POST /migrations  (full migration: apis + apps + subs)",
+          "name": "POST /migrations  (sync — full migration: apis + apps + subs)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if (pm.response.code === 201) {",
-                  "    const j = pm.response.json();",
-                  "    if (j.id) pm.collectionVariables.set('migrationJobId', j.id);",
-                  "    console.log('Migration job:', j.id, 'state:', j.state);",
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    const job  = body.job || body;",
+                  "    if (job && job.id) {",
+                  "        pm.collectionVariables.set('migrationJobId', job.id);",
+                  "        console.log('Migration job:', job.id, 'state:', job.state);",
+                  "    }",
+                  "    if (body.report) {",
+                  "        console.log('Report outcomes:', JSON.stringify(body.report.outcomes));",
+                  "        console.log('Warnings:', body.report.warnings ? body.report.warnings.length : 0);",
+                  "    }",
                   "}"
                 ]
               }
@@ -49,32 +61,51 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Partner-Id", "value": "{{tenantHeader}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"resourceTypes\": [\"apis\", \"applications\", \"subscriptions\"],\n  \"dryRun\": false,\n  \"userEmail\": \"sdmoh@local\"\n}" },
+            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"resourceTypes\": [\"apis\", \"applications\", \"subscriptions\"],\n  \"dryRun\": false,\n  \"userEmail\": \"{{userEmail}}\"\n}" },
             "url": { "raw": "{{baseUrl}}/migrations", "host": ["{{baseUrl}}"], "path": ["migrations"] },
-            "description": "Start a migration over the LATEST discovery snapshot for each requested resource type. Pass discoveryId in the body to pin to a specific snapshot."
+            "description": "Sync. Blocks until the job reaches COMPLETED / FAILED / DRY_RUN_DONE, then returns `{ job, report }`. Pass `discoveryId` in the body to pin to a specific snapshot; omit to use the latest revision for each resource type.\n\n10-minute server-side timeout. If exceeded, the last non-terminal job state comes back and you can keep polling via GET /migrations/{id}."
           }
         },
         {
-          "name": "POST /wso2/migrate/apis  (apis only)",
+          "name": "POST /migrations?async=true  (fire-and-forget)",
           "request": {
             "method": "POST",
             "header": [
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Partner-Id", "value": "{{tenantHeader}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"userEmail\": \"sdmoh@local\"\n}" },
-            "url": { "raw": "{{baseUrl}}/wso2/migrate/apis", "host": ["{{baseUrl}}"], "path": ["wso2", "migrate", "apis"] }
+            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"resourceTypes\": [\"apis\", \"applications\", \"subscriptions\"],\n  \"dryRun\": false,\n  \"userEmail\": \"{{userEmail}}\"\n}" },
+            "url": {
+              "raw": "{{baseUrl}}/migrations?async=true",
+              "host": ["{{baseUrl}}"],
+              "path": ["migrations"],
+              "query": [{ "key": "async", "value": "true" }]
+            },
+            "description": "Returns 201 immediately with the PENDING job. Poll GET /migrations/{id} until terminal state; then fetch GET /migrations/{id}/report."
           }
         },
         {
-          "name": "POST /wso2/migrate/subscriptions  (apps + subs only)",
+          "name": "POST /wso2/migrate/apis  (sync — apis only)",
           "request": {
             "method": "POST",
             "header": [
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Partner-Id", "value": "{{tenantHeader}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"userEmail\": \"sdmoh@local\"\n}" },
+            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"userEmail\": \"{{userEmail}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/wso2/migrate/apis", "host": ["{{baseUrl}}"], "path": ["wso2", "migrate", "apis"] },
+            "description": "Loose-validation shortcut: only the wso2Tenant is required. Migrates every API in the latest discovery snapshot for this tenant. Use /konnect/wso2/apis for the strict Apigee-style payload + explicit api list."
+          }
+        },
+        {
+          "name": "POST /wso2/migrate/subscriptions  (sync — apps + subs only)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Partner-Id", "value": "{{tenantHeader}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"userEmail\": \"{{userEmail}}\"\n}" },
             "url": { "raw": "{{baseUrl}}/wso2/migrate/subscriptions", "host": ["{{baseUrl}}"], "path": ["wso2", "migrate", "subscriptions"] }
           }
         },
@@ -86,15 +117,139 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Partner-Id", "value": "{{tenantHeader}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"resourceTypes\": [\"apis\"],\n  \"userEmail\": \"sdmoh@local\"\n}" },
+            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"resourceTypes\": [\"apis\"],\n  \"userEmail\": \"{{userEmail}}\"\n}" },
             "url": { "raw": "{{baseUrl}}/wso2/migrate/dry-run", "host": ["{{baseUrl}}"], "path": ["wso2", "migrate", "dry-run"] },
-            "description": "Translate snapshots into Kong entities and compute the diff WITHOUT writing to Konnect. The MigrationJob ends in DRY_RUN_DONE; the report holds the diff summary."
+            "description": "Translates the snapshots into Kong entities and computes the diff WITHOUT writing to Konnect. The MigrationJob ends in DRY_RUN_DONE; the embedded report carries the DiffSummary."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Per-resource migrations (Apigee-style)",
+      "description": "Strict Apigee-shaped requests — every field validated (companyName/wso2Tenant required, userEmail must be a valid email, requestTransactionId must match `{XXXX}_{company}_{tenant}_{env}_{timestamp}`, requestSource enum required). The per-resource list (`apis`/`applications`/etc.) is `@NotEmpty`. Internally maps to a filtered StartMigrationRequest so only the requested sourceIds get migrated.\n\nAll sync by default (full `{job, report}` inline). Append `?async=true` to opt out.",
+      "item": [
+        {
+          "name": "POST /konnect/wso2/apis  (selective API migration)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('autoTxId', 'WSO2_' + pm.collectionVariables.get('companyName') + '_' + pm.collectionVariables.get('wso2Tenant') + '_prod_' + Date.now());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Partner-Id", "value": "{{tenantHeader}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"sourceGateway\": \"wso2-apim\",\n  \"targetGateway\": \"kong-konnect\",\n  \"envClassification\": \"production\",\n  \"kongRegion\": \"{{kongRegion}}\",\n  \"kongCtrlPlanId\": \"{{kongCtrlPlanId}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"userEmail\": \"{{userEmail}}\",\n  \"requestTransactionId\": \"{{autoTxId}}\",\n  \"requestSource\": \"{{requestSource}}\",\n  \"dryRun\": false,\n  \"apis\": [\n    \"5d983d56-bae4-4317-a58f-38d73e94def3\"\n  ]\n}" },
+            "url": { "raw": "{{baseUrl}}/konnect/wso2/apis", "host": ["{{baseUrl}}"], "path": ["konnect", "wso2", "apis"] },
+            "description": "Replace the `apis` array with the WSO2 API sourceId(s) (UUIDs) you want to migrate. The pre-request script auto-generates a requestTransactionId matching the Apigee regex.\n\nValidation:\n- `userEmail` must be a valid email\n- `requestTransactionId` must match `^.{4}_.+_.+_.+_.+$`\n- `requestSource` must be one of UI / API / SCHEDULER / MIGRATION_TOOL\n- `apis` must be a non-empty list"
+          }
+        },
+        {
+          "name": "POST /konnect/wso2/applications  (selective application → consumer)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('autoTxId', 'WSO2_' + pm.collectionVariables.get('companyName') + '_' + pm.collectionVariables.get('wso2Tenant') + '_prod_' + Date.now());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Partner-Id", "value": "{{tenantHeader}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"userEmail\": \"{{userEmail}}\",\n  \"requestTransactionId\": \"{{autoTxId}}\",\n  \"requestSource\": \"{{requestSource}}\",\n  \"applications\": [\n    \"b565e6b9-4e6f-4445-a70f-d1eb9addf829\"\n  ]\n}" },
+            "url": { "raw": "{{baseUrl}}/konnect/wso2/applications", "host": ["{{baseUrl}}"], "path": ["konnect", "wso2", "applications"] }
+          }
+        },
+        {
+          "name": "POST /konnect/wso2/subscriptions  (selective subscription → consumer plugins)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('autoTxId', 'WSO2_' + pm.collectionVariables.get('companyName') + '_' + pm.collectionVariables.get('wso2Tenant') + '_prod_' + Date.now());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Partner-Id", "value": "{{tenantHeader}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"userEmail\": \"{{userEmail}}\",\n  \"requestTransactionId\": \"{{autoTxId}}\",\n  \"requestSource\": \"{{requestSource}}\",\n  \"subscriptions\": [\n    \"<subscription-sourceId>\"\n  ]\n}" },
+            "url": { "raw": "{{baseUrl}}/konnect/wso2/subscriptions", "host": ["{{baseUrl}}"], "path": ["konnect", "wso2", "subscriptions"] },
+            "description": "Loads ALL application snapshots for the tenant (unfiltered) so each requested subscription can be matched to its parent application — only the listed subscriptions are translated. The application's consumer is created/updated as a side effect."
+          }
+        },
+        {
+          "name": "POST /konnect/wso2/throttling-policies  (selective tier → rate-limiting)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('autoTxId', 'WSO2_' + pm.collectionVariables.get('companyName') + '_' + pm.collectionVariables.get('wso2Tenant') + '_prod_' + Date.now());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Partner-Id", "value": "{{tenantHeader}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"userEmail\": \"{{userEmail}}\",\n  \"requestTransactionId\": \"{{autoTxId}}\",\n  \"requestSource\": \"{{requestSource}}\",\n  \"throttlingpolicies\": [\n    \"<policy-sourceId>\"\n  ]\n}" },
+            "url": { "raw": "{{baseUrl}}/konnect/wso2/throttling-policies", "host": ["{{baseUrl}}"], "path": ["konnect", "wso2", "throttling-policies"] }
+          }
+        },
+        {
+          "name": "POST /konnect/wso2/key-managers  (selective key-manager)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('autoTxId', 'WSO2_' + pm.collectionVariables.get('companyName') + '_' + pm.collectionVariables.get('wso2Tenant') + '_prod_' + Date.now());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Partner-Id", "value": "{{tenantHeader}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"userEmail\": \"{{userEmail}}\",\n  \"requestTransactionId\": \"{{autoTxId}}\",\n  \"requestSource\": \"{{requestSource}}\",\n  \"keymanagers\": [\n    \"<key-manager-sourceId>\"\n  ]\n}" },
+            "url": { "raw": "{{baseUrl}}/konnect/wso2/key-managers", "host": ["{{baseUrl}}"], "path": ["konnect", "wso2", "key-managers"] }
           }
         }
       ]
     },
     {
       "name": "Jobs",
+      "description": "Useful when you used ?async=true or want to inspect an older run. The sync POST already returns the job + report inline, so these are typically not needed for normal flows.",
       "item": [
         {
           "name": "GET /migrations/{id}",
@@ -136,7 +291,8 @@
           "request": {
             "method": "DELETE",
             "header": [{ "key": "X-Partner-Id", "value": "{{tenantHeader}}" }],
-            "url": { "raw": "{{baseUrl}}/migrations/{{migrationJobId}}", "host": ["{{baseUrl}}"], "path": ["migrations", "{{migrationJobId}}"] }
+            "url": { "raw": "{{baseUrl}}/migrations/{{migrationJobId}}", "host": ["{{baseUrl}}"], "path": ["migrations", "{{migrationJobId}}"] },
+            "description": "Removes the migration job document only. The entity_mappings rows it created (so re-runs adopt cleanly) are NOT touched — pruning those is a separate, planned 'rollback' endpoint."
           }
         }
       ]
