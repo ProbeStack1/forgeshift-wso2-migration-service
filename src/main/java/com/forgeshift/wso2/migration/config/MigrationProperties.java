@@ -19,12 +19,14 @@ public class MigrationProperties {
     private String discoveryCollectionPrefix = "discovery_wso2_";
     private String discoveryRevisionsCollection = "discovery_revisions";
 
-    private String wso2ProfilesCollection = "profiles";
+    private String wso2ProfilesCollection = "wso2_profiles";
     private String kongKonnectProfilesCollection = "kong_konnect_profiles";
 
     private Translation translation = new Translation();
     private Konnect konnect = new Konnect();
     private Tenant tenant = new Tenant();
+    private Wso2 wso2 = new Wso2();
+    private BundleDownload bundleDownload = new BundleDownload();
 
     @Data
     public static class Translation {
@@ -66,5 +68,40 @@ public class MigrationProperties {
     public static class Tenant {
         private String headerName = "X-Partner-Id";
         private String defaultTenant = "probestack";
+    }
+
+    /**
+     * WSO2 source-side tuning for the bundle-download phase. Credentials
+     * themselves come from the {@code wso2_profiles} collection per request.
+     */
+    @Data
+    public static class Wso2 {
+        /**
+         * OAuth scopes requested in the password-grant token call. Includes
+         * {@code apim:api_import_export} because the Publisher export endpoint
+         * is gated by it — without that scope, the call returns
+         * {@code 500 / code 903220 "Failed to get API"}.
+         */
+        private String publisherScope =
+                "apim:api_view apim:api_create apim:api_publish apim:api_import_export";
+        private String tokenPath = "/oauth2/token";
+        /**
+         * APIM Publisher REST API export endpoint. WSO2 4.x exposes this as
+         * {@code /apis/export?apiId=&format=&preserveStatus=} — query-string
+         * style, not a path with the id substituted in. The client appends
+         * the apiId query param at call time.
+         */
+        private String exportPath = "/api/am/publisher/v4/apis/export";
+        /** Export format hint passed as a query param. */
+        private String exportFormat = "JSON";
+        /** When true, the exported ZIP keeps the lifecycle status the API was in. */
+        private boolean preserveStatus = true;
+        private int timeoutSeconds = 60;
+    }
+
+    @Data
+    public static class BundleDownload {
+        private String tempDir = System.getProperty("java.io.tmpdir") + "/wso2-migration-bundles";
+        private boolean cleanupAfterMigration = true;
     }
 }

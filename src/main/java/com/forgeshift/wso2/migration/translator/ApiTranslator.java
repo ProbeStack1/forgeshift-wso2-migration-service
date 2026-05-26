@@ -1,5 +1,7 @@
 package com.forgeshift.wso2.migration.translator;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.forgeshift.wso2.migration.bundle.Wso2ApiBundle;
 import com.forgeshift.wso2.migration.config.MigrationProperties;
 import com.forgeshift.wso2.migration.domain.kong.KongPlugin;
 import com.forgeshift.wso2.migration.domain.kong.KongRoute;
@@ -42,9 +44,27 @@ import java.util.*;
 public class ApiTranslator {
 
     private final MigrationProperties props;
+    private static final ObjectMapper JSON = new ObjectMapper();
 
+    /** Back-compat / fallback path — translate from the discovery JSON payload alone. */
     public TranslatedApi translate(DiscoverySnapshot snap) {
-        Map<String, Object> p = snap.getPayload() != null ? snap.getPayload() : Collections.emptyMap();
+        return translate(snap, null);
+    }
+
+    /**
+     * Translate one WSO2 API to Kong objects. When {@code bundle} is non-null
+     * its {@code apiJson} takes precedence over {@code snap.payload} (bundle
+     * data is pulled fresh at migration time, so it can't be stale). Swagger
+     * paths fill in route gaps when {@code operations[]} is empty.
+     * Sequences and certificates are surfaced as warnings — they require
+     * manual review and are not auto-translated in this phase.
+     */
+    public TranslatedApi translate(DiscoverySnapshot snap, Wso2ApiBundle bundle) {
+        Map<String, Object> bundleApi = bundle != null && bundle.getApiJson() != null
+                ? bundle.getApiJson() : null;
+        Map<String, Object> p = bundleApi != null && !bundleApi.isEmpty()
+                ? bundleApi
+                : (snap.getPayload() != null ? snap.getPayload() : Collections.emptyMap());
         String apiName = snap.getSourceName() != null ? snap.getSourceName() : str(p.get("name"));
         String apiVersion = snap.getSourceVersion() != null ? snap.getSourceVersion() : str(p.get("version"));
         String safeName = slug(apiName) + "-" + slug(apiVersion);
@@ -99,6 +119,12 @@ public class ApiTranslator {
         List<KongRoute> routes = new ArrayList<>();
         Map<String, List<KongPlugin>> routePlugins = new HashMap<>();
         List<Map<String, Object>> ops = listOfMaps(p.get("operations"));
+        // When the api.json carries no operations[] but we have a swagger spec
+        // in the bundle, synthesise operations from the swagger paths so each
+        // verb still gets its own Kong route.
+        if ((ops == null || ops.isEmpty()) && bundle != null) {
+            ops = operationsFromSwagger(bundle.getSwaggerJson());
+        }
         if (ops == null || ops.isEmpty()) {
             // Fallback: one route at the context, all methods
             KongRoute r = KongRoute.builder()
@@ -200,9 +226,62 @@ public class ApiTranslator {
             warnings.add("API " + apiName + " has " + c.size() + " mediation policies which require manual review (not translated in MVP).");
         }
 
+        // 6) Bundle-derived warnings — sequences and certs require manual review.
+        if (bundle != null) {
+            for (Map.Entry<String, String> seq : bundle.getSequences().entrySet()) {
+                String preview = seq.getValue() == null ? ""
+                        : seq.getValue().length() > 200
+                            ? seq.getValue().substring(0, 200) + "..."
+                            : seq.getValue();
+                warnings.add("WSO2 sequence " + seq.getKey()
+                        + " for API " + apiName + " requires manual review. Preview: " + preview);
+            }
+            for (Wso2ApiBundle.CertificateRef cert : bundle.getEndpointCerts()) {
+                warnings.add("Endpoint certificate " + cert.getFileName()
+                        + " (" + cert.getSizeBytes() + " bytes) for API " + apiName
+                        + " — Kong ssl object setup is manual in this phase.");
+            }
+            for (Wso2ApiBundle.CertificateRef cert : bundle.getClientCerts()) {
+                warnings.add("Client (mTLS) certificate " + cert.getFileName()
+                        + " (" + cert.getSizeBytes() + " bytes) for API " + apiName
+                        + " — Kong mtls-auth setup is manual in this phase.");
+            }
+        }
+
         out.servicePlugins(svcPlugins);
         out.warnings(warnings);
         return out.build();
+    }
+
+    /**
+     * Synthesise an {@code operations[]} list from a swagger 2.0 / OpenAPI 3
+     * paths map. Returns null when nothing usable is found — caller falls
+     * back to a single root route.
+     */
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> operationsFromSwagger(Map<String, Object> swagger) {
+        if (swagger == null || swagger.isEmpty()) return null;
+        Object paths = swagger.get("paths");
+        if (!(paths instanceof Map<?, ?> pm)) return null;
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Map.Entry<?, ?> entry : pm.entrySet()) {
+            String path = entry.getKey() == null ? null : entry.getKey().toString();
+            if (path == null) continue;
+            if (!(entry.getValue() instanceof Map<?, ?> ops)) continue;
+            for (Map.Entry<?, ?> op : ops.entrySet()) {
+                String verb = op.getKey() == null ? null : op.getKey().toString();
+                if (verb == null) continue;
+                String v = verb.toUpperCase();
+                if (!List.of("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS").contains(v)) {
+                    continue;
+                }
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("verb", v);
+                row.put("target", path);
+                out.add(row);
+            }
+        }
+        return out.isEmpty() ? null : out;
     }
 
     // ---------------- helpers ----------------
@@ -242,9 +321,8 @@ public class ApiTranslator {
 
     private EndpointInfo extractEndpoints(Map<String, Object> p) {
         EndpointInfo info = new EndpointInfo();
-        Object ec = p.get("endpointConfig");
-        if (!(ec instanceof Map<?, ?> map)) return info;
-        @SuppressWarnings("unchecked") Map<String, Object> mc = (Map<String, Object>) map;
+        Map<String, Object> mc = coerceEndpointConfig(p.get("endpointConfig"));
+        if (mc == null) return info;
         Object prod = mc.get("production_endpoints");
         if (prod instanceof Map<?, ?> pm) {
             Object url = ((Map<?, ?>) pm).get("url");
@@ -258,6 +336,27 @@ public class ApiTranslator {
             }
         }
         return info;
+    }
+
+    /**
+     * WSO2 Publisher API returns {@code endpointConfig} as a serialised JSON
+     * string, not a nested object. The exported bundle's {@code api.json}
+     * returns it as a real object. Accept both shapes (and gracefully give up
+     * on anything we can't parse).
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> coerceEndpointConfig(Object ec) {
+        if (ec == null) return null;
+        if (ec instanceof Map<?, ?> m) return (Map<String, Object>) m;
+        if (ec instanceof String s && !s.isBlank()) {
+            try {
+                Object parsed = JSON.readValue(s, Object.class);
+                if (parsed instanceof Map<?, ?> m) return (Map<String, Object>) m;
+            } catch (Exception e) {
+                log.warn("endpointConfig string is not valid JSON: {}", e.getMessage());
+            }
+        }
+        return null;
     }
 
     private HostPort parseHostPort(String url) {

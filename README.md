@@ -55,7 +55,7 @@ Atlas database. Same pattern as the Apigee reference.
 
 ## REST API at a glance
 
-Context path: `/migration/v1`. Default port: 8083.
+Context path: `/wso2/migration/v1`. Default port: 8083.
 
 | Group | Surface |
 |---|---|
@@ -172,7 +172,7 @@ curl -X POST http://localhost:8081/discovery/v1/discoveries \
   -d '{"wso2Tenant":"carbon.super","userEmail":"sdmoh@local"}'
 
 # 3. Dry-run the migration first (no Konnect writes)
-curl -X POST http://localhost:8083/migration/v1/wso2/migrate/dry-run \
+curl -X POST http://localhost:8083/wso2/migration/v1/wso2/migrate/dry-run \
   -H "Content-Type: application/json" -H "X-Partner-Id: probestack" \
   -d '{"companyName":"probestack","wso2Tenant":"carbon.super",
        "kongProfileName":"primary","resourceTypes":["apis"],
@@ -181,7 +181,7 @@ curl -X POST http://localhost:8083/migration/v1/wso2/migrate/dry-run \
 # → GET /migrations/{id}/report to see the planned diff
 
 # 4. Real migration
-curl -X POST http://localhost:8083/migration/v1/migrations \
+curl -X POST http://localhost:8083/wso2/migration/v1/migrations \
   -H "Content-Type: application/json" -H "X-Partner-Id: probestack" \
   -d '{"companyName":"probestack","wso2Tenant":"carbon.super",
        "kongProfileName":"primary","userEmail":"sdmoh@local"}'

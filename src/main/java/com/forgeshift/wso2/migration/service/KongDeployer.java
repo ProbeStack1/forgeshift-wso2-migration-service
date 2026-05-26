@@ -55,7 +55,7 @@ public class KongDeployer {
                     job.getCompanyName(), job.getWso2Tenant(), job.getId(),
                     "upstream:" + api.getWso2SourceId(),
                     api.getUpstream().getTags(), api.getUpstream());
-            tally(out, r);
+            tally(out, r, KongEntityType.UPSTREAM, api.getUpstream().getName());
             if ("FAILED".equals(r.getAction())) {
                 log.warn("Skipping rest of API {} after upstream failure: {}",
                         api.getWso2SourceName(), r.getErrorMessage());
@@ -70,7 +70,7 @@ public class KongDeployer {
                         job.getCompanyName(), job.getWso2Tenant(), job.getId(),
                         "target:" + api.getWso2SourceId() + ":" + i,
                         t.getTags(), t);
-                tally(out, tr);
+                tally(out, tr, KongEntityType.TARGET, t.getTarget());
             }
         }
 
@@ -79,7 +79,7 @@ public class KongDeployer {
         KonnectUpsertResult svcR = client.upsert(creds, KongEntityType.SERVICE, null,
                 job.getCompanyName(), job.getWso2Tenant(), job.getId(),
                 api.getWso2SourceId(), svc.getTags(), svc);
-        tally(out, svcR);
+        tally(out, svcR, KongEntityType.SERVICE, svc.getName());
         if ("FAILED".equals(svcR.getAction())) {
             log.warn("Skipping rest of API {} after service failure: {}",
                     api.getWso2SourceName(), svcR.getErrorMessage());
@@ -95,7 +95,7 @@ public class KongDeployer {
                     job.getCompanyName(), job.getWso2Tenant(), job.getId(),
                     "route:" + api.getWso2SourceId() + ":" + r.getName(),
                     r.getTags(), r);
-            tally(out, rr);
+            tally(out, rr, KongEntityType.ROUTE, r.getName());
             if ("FAILED".equals(rr.getAction())) continue;
             routeUuidByName.put(r.getName(), rr.getKongUuid());
         }
@@ -107,7 +107,7 @@ public class KongDeployer {
                     job.getCompanyName(), job.getWso2Tenant(), job.getId(),
                     "plugin:" + api.getWso2SourceId() + ":svc:" + pl.getName(),
                     pl.getTags(), pl);
-            tally(out, pr);
+            tally(out, pr, KongEntityType.PLUGIN, pl.getName() + " (service-scope)");
         }
 
         // 6. Route-scoped plugins
@@ -120,7 +120,7 @@ public class KongDeployer {
                         job.getCompanyName(), job.getWso2Tenant(), job.getId(),
                         "plugin:" + api.getWso2SourceId() + ":route:" + e.getKey() + ":" + pl.getName(),
                         pl.getTags(), pl);
-                tally(out, pr);
+                tally(out, pr, KongEntityType.PLUGIN, pl.getName() + " (route:" + e.getKey() + ")");
             }
         }
         return out;
@@ -132,7 +132,7 @@ public class KongDeployer {
         KonnectUpsertResult cr = client.upsert(creds, KongEntityType.CONSUMER, null,
                 job.getCompanyName(), job.getWso2Tenant(), job.getId(),
                 c.getWso2SourceId(), consumer.getTags(), consumer);
-        tally(out, cr);
+        tally(out, cr, KongEntityType.CONSUMER, consumer.getUsername());
         if ("FAILED".equals(cr.getAction())) {
             log.warn("Skipping plugins for consumer {} after failure: {}",
                     c.getWso2SourceName(), cr.getErrorMessage());
@@ -146,19 +146,32 @@ public class KongDeployer {
                     job.getCompanyName(), job.getWso2Tenant(), job.getId(),
                     "plugin:consumer:" + c.getWso2SourceId() + ":" + pl.getName(),
                     pl.getTags(), pl);
-            tally(out, pr);
+            tally(out, pr, KongEntityType.PLUGIN, pl.getName() + " (consumer:" + consumer.getUsername() + ")");
         }
         return out;
     }
 
-    private static void tally(DeployOutcome o, KonnectUpsertResult r) {
+    /**
+     * Roll up a single upsert outcome into the {@link DeployOutcome}. On
+     * FAILED we now log the entity type + name + the raw Konnect error
+     * body so an operator can see WHY each entity failed without having
+     * to enable DEBUG. Without this, a batch of 20+ failures shows up as
+     * a single counter increment and the root cause is invisible.
+     */
+    private static void tally(DeployOutcome o, KonnectUpsertResult r,
+                              KongEntityType type, String entityName) {
         switch (r.getAction()) {
             case "CREATED" -> o.created++;
             case "UPDATED" -> o.updated++;
             case "UNCHANGED" -> o.unchanged++;
             default -> {
                 o.failed++;
-                if (r.getErrorMessage() != null) o.errors.add(r.getErrorMessage());
+                if (r.getErrorMessage() != null) {
+                    o.errors.add(r.getErrorMessage());
+                    log.warn("Kong {} '{}' upsert FAILED: {}", type, entityName, r.getErrorMessage());
+                } else {
+                    log.warn("Kong {} '{}' upsert FAILED with no error message", type, entityName);
+                }
             }
         }
     }

@@ -2,11 +2,11 @@
   "info": {
     "_postman_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
     "name": "Forgeshift WSO2 -> Kong Konnect Migration Service",
-    "description": "Reads WSO2 snapshots from the discovery service's MongoDB collections, reads Konnect credentials from the profile-config service's MongoDB collections, translates to Kong entities, and deploys via the Konnect Admin API.\n\nBase URL: http://localhost:8083/migration/v1 (set via baseUrl variable).",
+    "description": "Reads WSO2 snapshots from the discovery service's MongoDB collections, reads Konnect credentials from the profile-config service's MongoDB collections, translates to Kong entities, and deploys via the Konnect Admin API.\n\nBase URL: http://localhost:8083/wso2/migration/v1 (set via baseUrl variable).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "baseUrl", "value": "http://localhost:8083/migration/v1", "type": "string" },
+    { "key": "baseUrl", "value": "http://localhost:8083/wso2/migration/v1", "type": "string" },
     { "key": "companyName", "value": "probestack", "type": "string" },
     { "key": "wso2Tenant", "value": "carbon.super", "type": "string" },
     { "key": "discoveryId", "value": "", "type": "string" },

@@ -1,5 +1,6 @@
 package com.forgeshift.wso2.migration.service;
 
+import com.forgeshift.wso2.migration.bundle.Wso2ApiBundle;
 import com.forgeshift.wso2.migration.domain.MigrationJob;
 import com.forgeshift.wso2.migration.domain.MigrationReport;
 import com.forgeshift.wso2.migration.domain.MigrationState;
@@ -8,6 +9,8 @@ import com.forgeshift.wso2.migration.reader.DiscoverySnapshot;
 import com.forgeshift.wso2.migration.reader.DiscoverySnapshotReader;
 import com.forgeshift.wso2.migration.reader.KongKonnectCredentials;
 import com.forgeshift.wso2.migration.reader.KongKonnectProfileReader;
+import com.forgeshift.wso2.migration.reader.Wso2Credentials;
+import com.forgeshift.wso2.migration.reader.Wso2ProfileReader;
 import com.forgeshift.wso2.migration.repository.MigrationJobRepository;
 import com.forgeshift.wso2.migration.repository.MigrationReportRepository;
 import com.forgeshift.wso2.migration.translator.ApiTranslator;
@@ -22,6 +25,7 @@ import org.springframework.util.StringUtils;
 
 import java.time.Instant;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Top-level migration orchestrator.
@@ -42,6 +46,8 @@ public class MigrationService {
     private final MigrationReportRepository reportRepository;
     private final DiscoverySnapshotReader snapshotReader;
     private final KongKonnectProfileReader profileReader;
+    private final Wso2ProfileReader wso2ProfileReader;
+    private final Wso2BundleDownloadService bundleDownloadService;
     private final ApiTranslator apiTranslator;
     private final SubscriptionTranslator subscriptionTranslator;
     private final KongDeployer deployer;
@@ -68,6 +74,45 @@ public class MigrationService {
         return job;
     }
 
+    /**
+     * Synchronous variant of {@link #startMigration}: kicks off the
+     * migration and polls the job document until it reaches a terminal
+     * state (COMPLETED / FAILED / DRY_RUN_DONE / CANCELLED) or the
+     * caller-supplied timeout elapses. Returns the final job document so
+     * the controller can attach the report and respond in a single
+     * round-trip.
+     *
+     * <p>If the timeout fires before the job finishes, the last-known
+     * (non-terminal) state is returned and the caller can decide whether
+     * to keep polling via {@code GET /migrations/{id}}.
+     */
+    public MigrationJob startMigrationAndWait(StartMigrationRequest req, long timeoutSeconds) {
+        MigrationJob job = startMigration(req);
+        long deadlineNanos = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(timeoutSeconds);
+        while (System.nanoTime() < deadlineNanos) {
+            MigrationJob current = jobRepository.findById(job.getId()).orElse(null);
+            if (current != null && isTerminal(current.getState())) {
+                return current;
+            }
+            try {
+                Thread.sleep(500L);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        log.warn("Sync wait for migration {} timed out after {}s; last state was non-terminal",
+                job.getId(), timeoutSeconds);
+        return jobRepository.findById(job.getId()).orElse(job);
+    }
+
+    private static boolean isTerminal(MigrationState s) {
+        return s == MigrationState.COMPLETED
+                || s == MigrationState.FAILED
+                || s == MigrationState.DRY_RUN_DONE
+                || s == MigrationState.CANCELLED;
+    }
+
     @Async("migrationExecutor")
     public void runMigration(String jobId, StartMigrationRequest req) {
         MigrationJob job = jobRepository.findById(jobId).orElse(null);
@@ -87,16 +132,46 @@ public class MigrationService {
 
             Map<String, List<DiscoverySnapshot>> byType = loadSnapshots(job, req);
 
+            // ----- DOWNLOADING BUNDLES -----
+            // Pull each API's full export ZIP from WSO2 so the translator has
+            // authoritative endpoint config, swagger, sequences and certs to
+            // work with. Per-API failures degrade gracefully — warn, mark
+            // BUNDLE_FAILED, fall back to JSON-only translation, keep going.
+            job.setState(MigrationState.DOWNLOADING_BUNDLES);
+            jobRepository.save(job);
+
+            List<DiscoverySnapshot> apiSnapshots = byType.getOrDefault("apis", List.of());
+            Wso2Credentials wso2Creds = wso2ProfileReader.resolve(
+                    req.getCompanyName(), req.getWso2Tenant());
+            Wso2BundleDownloadService.Result bundleResult =
+                    bundleDownloadService.download(wso2Creds, apiSnapshots);
+
+            // Warnings for every failed bundle so they show up in the report.
+            List<MigrationReport.Warning> warnings = new ArrayList<>();
+            for (DiscoverySnapshot s : apiSnapshots) {
+                String fail = bundleResult.failures.get(s.getSourceId());
+                if (fail != null) {
+                    warnings.add(warn("apis", s, "BUNDLE_FAILED", fail));
+                }
+            }
+            recordProgress(job, "apis-bundles",
+                    bundleResult.failures.isEmpty() ? "COMPLETED" : "PARTIAL",
+                    bundleResult.bundles.size(),
+                    0,
+                    bundleResult.failures.isEmpty() ? null
+                            : bundleResult.failures.size() + " API bundle(s) failed; using JSON-only fallback");
+
             // ----- TRANSLATING -----
             job.setState(MigrationState.TRANSLATING);
             jobRepository.save(job);
 
             List<TranslatedApi> translatedApis = new ArrayList<>();
             List<TranslatedConsumer> translatedConsumers = new ArrayList<>();
-            List<MigrationReport.Warning> warnings = new ArrayList<>();
+            // (warnings list already created above for BUNDLE_FAILED entries)
 
-            for (DiscoverySnapshot s : byType.getOrDefault("apis", List.of())) {
-                TranslatedApi t = apiTranslator.translate(s);
+            for (DiscoverySnapshot s : apiSnapshots) {
+                Wso2ApiBundle bundle = bundleResult.bundles.get(s.getSourceId());
+                TranslatedApi t = apiTranslator.translate(s, bundle);
                 translatedApis.add(t);
                 for (String w : t.getWarnings()) {
                     warnings.add(warn("apis", s, "TRANSLATION_NOTE", w));
@@ -127,7 +202,9 @@ public class MigrationService {
             // ----- DRY RUN OR DEPLOY -----
             if (req.isDryRun()) {
                 MigrationReport.DiffSummary diff = computeDiff(creds, translatedApis, translatedConsumers);
-                writeReport(job, translatedApis, translatedConsumers, warnings, diff);
+                writeReport(job, translatedApis, translatedConsumers, warnings, diff,
+                        new ResourceCounters(translatedApis.size(), 0, 0, 0, List.of()),
+                        new ResourceCounters(translatedConsumers.size(), 0, 0, 0, List.of()));
                 job.setState(MigrationState.DRY_RUN_DONE);
                 job.setCompletedAt(Instant.now());
                 jobRepository.save(job);
@@ -138,7 +215,7 @@ public class MigrationService {
             jobRepository.save(job);
 
             int totalDeployed = 0, totalUnchanged = 0, totalFailed = 0;
-            int apiCreated = 0, apiUpdated = 0, apiFailed = 0;
+            int apiCreated = 0, apiUpdated = 0, apiUnchanged = 0, apiFailed = 0;
             List<String> failedApiIds = new ArrayList<>();
             for (TranslatedApi t : translatedApis) {
                 KongDeployer.DeployOutcome o = deployer.deployApi(creds, t, job);
@@ -147,16 +224,19 @@ public class MigrationService {
                 totalFailed += o.failed;
                 apiCreated += o.created;
                 apiUpdated += o.updated;
+                apiUnchanged += o.unchanged;
                 if (o.failed > 0) {
-                    apiFailed++;
+                    apiFailed += o.failed;
                     failedApiIds.add(t.getWso2SourceId());
                 }
             }
             recordProgress(job, "apis", "COMPLETED",
                     translatedApis.size(), apiCreated + apiUpdated,
-                    apiFailed > 0 ? apiFailed + " APIs had failing entities" : null);
+                    apiFailed > 0 ? apiFailed + " entit(ies) failed across "
+                            + failedApiIds.size() + " API(s)" : null);
 
-            int consCreated = 0, consUpdated = 0, consFailed = 0;
+            int consCreated = 0, consUpdated = 0, consUnchanged = 0, consFailed = 0;
+            List<String> failedConsumerIds = new ArrayList<>();
             for (TranslatedConsumer c : translatedConsumers) {
                 KongDeployer.DeployOutcome o = deployer.deployConsumer(creds, c, job);
                 totalDeployed += (o.created + o.updated);
@@ -164,18 +244,34 @@ public class MigrationService {
                 totalFailed += o.failed;
                 consCreated += o.created;
                 consUpdated += o.updated;
-                if (o.failed > 0) consFailed++;
+                consUnchanged += o.unchanged;
+                if (o.failed > 0) {
+                    consFailed += o.failed;
+                    failedConsumerIds.add(c.getWso2SourceId());
+                }
             }
             if (!translatedConsumers.isEmpty()) {
                 recordProgress(job, "subscriptions", "COMPLETED",
                         translatedConsumers.size(), consCreated + consUpdated,
-                        consFailed > 0 ? consFailed + " consumers had failing entities" : null);
+                        consFailed > 0 ? consFailed + " entit(ies) failed across "
+                                + failedConsumerIds.size() + " consumer(s)" : null);
             }
 
             job.getCounts().setTotalDeployed(totalDeployed);
             job.getCounts().setTotalUnchanged(totalUnchanged);
             job.getCounts().setTotalFailed(totalFailed);
-            writeReport(job, translatedApis, translatedConsumers, warnings, null);
+
+            // Per-resource counters land in the report instead of the leaky
+            // job-level totals that used to count consumer deploys as API
+            // deploys in the "apis" outcome row.
+            ResourceCounters apiCounts = new ResourceCounters(
+                    translatedApis.size(), apiCreated + apiUpdated,
+                    apiUnchanged, apiFailed, failedApiIds);
+            ResourceCounters consCounts = new ResourceCounters(
+                    translatedConsumers.size(), consCreated + consUpdated,
+                    consUnchanged, consFailed, failedConsumerIds);
+            writeReport(job, translatedApis, translatedConsumers, warnings, null,
+                    apiCounts, consCounts);
 
             job.setState(MigrationState.COMPLETED);
             job.setCompletedAt(Instant.now());
@@ -195,6 +291,8 @@ public class MigrationService {
 
     private Map<String, List<DiscoverySnapshot>> loadSnapshots(MigrationJob job, StartMigrationRequest req) {
         Map<String, List<DiscoverySnapshot>> out = new HashMap<>();
+        Map<String, List<String>> filters = req.getResourceFilters() != null
+                ? req.getResourceFilters() : Collections.emptyMap();
         for (String type : job.getResourceTypes()) {
             List<DiscoverySnapshot> snaps;
             if (StringUtils.hasText(req.getDiscoveryId())) {
@@ -206,6 +304,19 @@ public class MigrationService {
                     job.setSourceRevision(snaps.get(0).getRevision());
                     job.setSourceDiscoveryId(snaps.get(0).getDiscoveryId());
                 }
+            }
+            // Per-type allow-list (sourceIds): when supplied, drop every
+            // snapshot whose sourceId isn't on the list. Bulk callers omit
+            // resourceFilters → no filtering, every snapshot survives.
+            List<String> filter = filters.get(type);
+            if (filter != null && !filter.isEmpty()) {
+                java.util.Set<String> wanted = new java.util.HashSet<>(filter);
+                int before = snaps.size();
+                snaps = snaps.stream()
+                        .filter(s -> wanted.contains(s.getSourceId()))
+                        .collect(Collectors.toList());
+                log.info("[{}] filter shrank {} snapshots → {} for migration {} (allow-list size {})",
+                        type, before, snaps.size(), job.getId(), wanted.size());
             }
             out.put(type, snaps);
             log.info("[{}] loaded {} snapshots for migration {}", type, snaps.size(), job.getId());
@@ -243,22 +354,37 @@ public class MigrationService {
                 .build();
     }
 
+    /**
+     * Per-resource roll-up the orchestrator hands to {@link #writeReport} so
+     * each outcome row reports counts for its own resource type only —
+     * instead of the leaky job-level totals the earlier impl used.
+     */
+    private record ResourceCounters(int translated, int deployed, int unchanged,
+                                    int failed, List<String> failedSourceIds) {}
+
     private void writeReport(MigrationJob job, List<TranslatedApi> apis,
                              List<TranslatedConsumer> consumers,
                              List<MigrationReport.Warning> warnings,
-                             MigrationReport.DiffSummary diff) {
+                             MigrationReport.DiffSummary diff,
+                             ResourceCounters apiCounts,
+                             ResourceCounters consumerCounts) {
         List<MigrationReport.ResourceOutcome> outcomes = new ArrayList<>();
         outcomes.add(MigrationReport.ResourceOutcome.builder()
                 .resourceType("apis")
-                .translated(apis.size())
-                .deployed(job.getCounts().getTotalDeployed())
-                .unchanged(job.getCounts().getTotalUnchanged())
-                .failed(job.getCounts().getTotalFailed())
+                .translated(apiCounts.translated())
+                .deployed(apiCounts.deployed())
+                .unchanged(apiCounts.unchanged())
+                .failed(apiCounts.failed())
+                .failedSourceIds(apiCounts.failedSourceIds())
                 .build());
         if (!consumers.isEmpty()) {
             outcomes.add(MigrationReport.ResourceOutcome.builder()
                     .resourceType("subscriptions")
-                    .translated(consumers.size())
+                    .translated(consumerCounts.translated())
+                    .deployed(consumerCounts.deployed())
+                    .unchanged(consumerCounts.unchanged())
+                    .failed(consumerCounts.failed())
+                    .failedSourceIds(consumerCounts.failedSourceIds())
                     .build());
         }
         MigrationReport report = MigrationReport.builder()
