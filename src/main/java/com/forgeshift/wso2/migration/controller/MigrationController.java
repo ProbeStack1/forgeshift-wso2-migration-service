@@ -124,7 +124,7 @@ public class MigrationController {
             @Valid @RequestBody Wso2MigrateApplicationsRequest req,
             @RequestParam(defaultValue = "false") boolean async) {
         StartMigrationRequest internal = toInternal(req);
-        internal.setResourceTypes(List.of("applications"));
+        internal.setResourceTypes(List.of("applications", "subscriptions"));
         internal.setResourceFilters(Map.of("applications", req.getApplications()));
         return runMigration(internal, async);
     }

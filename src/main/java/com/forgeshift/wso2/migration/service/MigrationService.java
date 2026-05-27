@@ -19,7 +19,8 @@ import com.forgeshift.wso2.migration.translator.TranslatedApi;
 import com.forgeshift.wso2.migration.translator.TranslatedConsumer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.annotation.Async;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -51,6 +52,8 @@ public class MigrationService {
     private final ApiTranslator apiTranslator;
     private final SubscriptionTranslator subscriptionTranslator;
     private final KongDeployer deployer;
+    @Qualifier("migrationExecutor")
+    private final TaskExecutor migrationExecutor;
 
     /** Public entry: synchronous create + async fan-out. */
     public MigrationJob startMigration(StartMigrationRequest req) {
@@ -70,7 +73,8 @@ public class MigrationService {
         log.info("Migration job {} created (company={} tenant={} dryRun={} resourceTypes={})",
                 job.getId(), job.getCompanyName(), job.getWso2Tenant(), job.isDryRun(),
                 job.getResourceTypes());
-        runMigration(job.getId(), req);
+        String jobId = job.getId();
+        migrationExecutor.execute(() -> runMigration(jobId, req));
         return job;
     }
 
@@ -113,7 +117,6 @@ public class MigrationService {
                 || s == MigrationState.CANCELLED;
     }
 
-    @Async("migrationExecutor")
     public void runMigration(String jobId, StartMigrationRequest req) {
         MigrationJob job = jobRepository.findById(jobId).orElse(null);
         if (job == null) {
@@ -169,6 +172,8 @@ public class MigrationService {
             List<TranslatedConsumer> translatedConsumers = new ArrayList<>();
             // (warnings list already created above for BUNDLE_FAILED entries)
 
+            scopeApplicationsForSelectedSubscriptions(byType, req);
+
             for (DiscoverySnapshot s : apiSnapshots) {
                 Wso2ApiBundle bundle = bundleResult.bundles.get(s.getSourceId());
                 TranslatedApi t = apiTranslator.translate(s, bundle);
@@ -179,7 +184,7 @@ public class MigrationService {
             }
             recordProgress(job, "apis", "TRANSLATED", translatedApis.size(), 0, null);
 
-            if (job.getResourceTypes().contains("subscriptions")) {
+            if (hasConsumerResources(job.getResourceTypes())) {
                 List<TranslatedConsumer> tcs = subscriptionTranslator.translate(
                         byType.getOrDefault("applications", List.of()),
                         byType.getOrDefault("subscriptions", List.of()));
@@ -289,6 +294,36 @@ public class MigrationService {
 
     // ---------------- helpers ----------------
 
+    /**
+     * A selective subscription request initially needs to load applications
+     * broadly so the parent consumer can be built. Before translating, narrow
+     * that application list to only the parents referenced by the selected
+     * subscriptions; otherwise a single-subscription request deploys every
+     * application in the latest discovery revision.
+     */
+    private void scopeApplicationsForSelectedSubscriptions(Map<String, List<DiscoverySnapshot>> byType,
+                                                           StartMigrationRequest req) {
+        Map<String, List<String>> filters = req.getResourceFilters();
+        if (filters == null || filters.containsKey("applications")
+                || !filters.containsKey("subscriptions")) {
+            return;
+        }
+
+        Set<String> parentApplicationIds = byType.getOrDefault("subscriptions", List.of()).stream()
+                .map(s -> mapField(s.getPayload(), "applicationId"))
+                .filter(StringUtils::hasText)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (parentApplicationIds.isEmpty()) {
+            byType.put("applications", List.of());
+            return;
+        }
+
+        List<DiscoverySnapshot> scopedApplications = byType.getOrDefault("applications", List.of()).stream()
+                .filter(a -> parentApplicationIds.contains(a.getSourceId()))
+                .collect(Collectors.toList());
+        byType.put("applications", scopedApplications);
+    }
+
     private Map<String, List<DiscoverySnapshot>> loadSnapshots(MigrationJob job, StartMigrationRequest req) {
         Map<String, List<DiscoverySnapshot>> out = new HashMap<>();
         Map<String, List<String>> filters = req.getResourceFilters() != null
@@ -369,14 +404,16 @@ public class MigrationService {
                              ResourceCounters apiCounts,
                              ResourceCounters consumerCounts) {
         List<MigrationReport.ResourceOutcome> outcomes = new ArrayList<>();
-        outcomes.add(MigrationReport.ResourceOutcome.builder()
-                .resourceType("apis")
-                .translated(apiCounts.translated())
-                .deployed(apiCounts.deployed())
-                .unchanged(apiCounts.unchanged())
-                .failed(apiCounts.failed())
-                .failedSourceIds(apiCounts.failedSourceIds())
-                .build());
+        if (job.getResourceTypes().contains("apis") || apiCounts.translated() > 0) {
+            outcomes.add(MigrationReport.ResourceOutcome.builder()
+                    .resourceType("apis")
+                    .translated(apiCounts.translated())
+                    .deployed(apiCounts.deployed())
+                    .unchanged(apiCounts.unchanged())
+                    .failed(apiCounts.failed())
+                    .failedSourceIds(apiCounts.failedSourceIds())
+                    .build());
+        }
         if (!consumers.isEmpty()) {
             outcomes.add(MigrationReport.ResourceOutcome.builder()
                     .resourceType("subscriptions")
@@ -430,5 +467,16 @@ public class MigrationService {
     private static List<String> defaultIfEmpty(List<String> in) {
         if (in == null || in.isEmpty()) return List.of("apis", "applications", "subscriptions");
         return in;
+    }
+
+    private static boolean hasConsumerResources(List<String> resourceTypes) {
+        return resourceTypes != null
+                && (resourceTypes.contains("applications") || resourceTypes.contains("subscriptions"));
+    }
+
+    private static String mapField(Map<String, Object> root, String key) {
+        if (root == null) return null;
+        Object v = root.get(key);
+        return v == null ? null : v.toString();
     }
 }
