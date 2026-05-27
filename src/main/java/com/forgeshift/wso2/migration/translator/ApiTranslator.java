@@ -208,7 +208,7 @@ public class ApiTranslator {
             cfg.put("methods", ALL_CORS_METHODS);
             cfg.put("headers", List.of("*"));
             cfg.put("exposed_headers", List.of("*"));
-            cfg.put("credentials", Boolean.TRUE.equals(cors.get("accessControlAllowCredentials")));
+            cfg.put("credentials", false);
             svcPlugins.add(KongPlugin.builder().name("cors").config(cfg).enabled(true).tags(tags).build());
         }
 
