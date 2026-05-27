@@ -5,7 +5,6 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Pattern;
 import lombok.Data;
 
 /**
@@ -19,11 +18,10 @@ import lombok.Data;
  * <p>Validation:
  * <ul>
  *   <li>{@code companyName}, {@code wso2Tenant}, {@code userEmail},
- *       {@code requestTransactionId}, {@code requestSource} are required.</li>
+ *       {@code requestSource} are required.</li>
  *   <li>{@code userEmail} must be a valid email address.</li>
- *   <li>{@code requestTransactionId} must follow the pattern
- *       {@code XXXX_{company}_{tenant}_{env}_{timestamp}} (4-char prefix
- *       + four underscore-separated segments) — same regex Apigee uses.</li>
+ *   <li>{@code requestTransactionId} is optional. A server UUID is generated
+ *       when absent.</li>
  *   <li>Everything else is optional. {@code kongRegion} /
  *       {@code kongCtrlPlanId} override the values resolved from
  *       {@code kong_konnect_profiles}.</li>
@@ -76,15 +74,10 @@ public abstract class Wso2BaseMigrationRequest {
             requiredMode = Schema.RequiredMode.REQUIRED)
     private String userEmail;
 
-    @NotBlank
-    @Pattern(
-            regexp = "^.{4}_.+_.+_.+_.+$",
-            message = "requestTransactionId must follow pattern: {XXXX}_{company}_{tenant}_{env}_{timestamp}"
-    )
     @JsonProperty("requestTransactionId")
-    @Schema(description = "Stable id for this request; doubles as discoveryId when omitted on discovery side",
+    @Schema(description = "Optional caller-supplied correlation id. A server UUID is generated when absent.",
             example = "WSO2_probestack_carbon.super_prod_1716700000000",
-            requiredMode = Schema.RequiredMode.REQUIRED)
+            requiredMode = Schema.RequiredMode.NOT_REQUIRED)
     private String requestTransactionId;
 
     @NotNull(message = "requestSource is required")

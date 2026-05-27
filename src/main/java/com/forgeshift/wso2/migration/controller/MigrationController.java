@@ -104,7 +104,7 @@ public class MigrationController {
 
     // ───────── Apigee-style per-resource endpoints ─────────
     // Each accepts a strict DTO (companyName/wso2Tenant/userEmail/
-    // requestTransactionId/requestSource required, regex-validated) with
+    // requestSource required) with
     // an explicit NotEmpty list of WSO2 sourceIds. Converted internally
     // to a single-type StartMigrationRequest plus a resourceFilters map
     // so loadSnapshots only pulls the requested rows.
