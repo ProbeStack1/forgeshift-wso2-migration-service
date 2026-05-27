@@ -45,6 +45,8 @@ public class ApiTranslator {
 
     private final MigrationProperties props;
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final List<String> ALL_CORS_METHODS = List.of(
+            "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT");
 
     /** Back-compat / fallback path — translate from the discovery JSON payload alone. */
     public TranslatedApi translate(DiscoverySnapshot snap) {
@@ -202,9 +204,10 @@ public class ApiTranslator {
         Map<String, Object> cors = mapOf(p.get("corsConfiguration"));
         if (cors != null && Boolean.TRUE.equals(cors.get("corsConfigurationEnabled"))) {
             Map<String, Object> cfg = new LinkedHashMap<>();
-            cfg.put("origins", stringListOrDefault(cors.get("accessControlAllowOrigins"), List.of("*")));
-            cfg.put("methods", stringListOrDefault(cors.get("accessControlAllowMethods"), List.of("GET", "POST")));
-            cfg.put("headers", stringListOrDefault(cors.get("accessControlAllowHeaders"), List.of("*")));
+            cfg.put("origins", List.of("*"));
+            cfg.put("methods", ALL_CORS_METHODS);
+            cfg.put("headers", List.of("*"));
+            cfg.put("exposed_headers", List.of("*"));
             cfg.put("credentials", Boolean.TRUE.equals(cors.get("accessControlAllowCredentials")));
             svcPlugins.add(KongPlugin.builder().name("cors").config(cfg).enabled(true).tags(tags).build());
         }
@@ -416,11 +419,6 @@ public class ApiTranslator {
             return out;
         }
         return null;
-    }
-
-    private static List<String> stringListOrDefault(Object o, List<String> def) {
-        List<String> r = stringList(o);
-        return r == null || r.isEmpty() ? def : r;
     }
 
     @SuppressWarnings("unchecked")
