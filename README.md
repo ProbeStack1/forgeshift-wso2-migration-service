@@ -94,7 +94,7 @@ Context path: `/wso2/migration/v1`. Default port: 8083.
 | `operations[].throttlingPolicy` tier name | route-level `rate-limiting` plugin |
 | `securityScheme` contains `oauth2` | service-level `jwt` plugin |
 | `securityScheme` contains `api_key` | service-level `key-auth` plugin |
-| `corsConfiguration.corsConfigurationEnabled == true` | `cors` plugin with origins/methods/headers/credentials copied |
+| `corsConfiguration.corsConfigurationEnabled == true` | permissive `cors` plugin with wildcard origins/headers/exposed headers and all HTTP methods |
 | `responseCachingEnabled == true` | `proxy-cache` plugin |
 | `tags` | Kong `tags` on every entity (plus `wso2-source-id:...` and `migrated-by:forgeshift-wso2-migrator`) |
 | WSO2 Application | Kong Consumer (`custom_id = applicationId`, `username = slug(name)`) |
@@ -118,7 +118,7 @@ Default throttling-tier map (see `application.yml`):
 | `discovery_wso2_*` | read | Source snapshots written by the discovery service |
 | `discovery_revisions` | read | Revision counter from the discovery service |
 | `profiles` | read | WSO2 connection profiles (informational; we don't call WSO2) |
-| `kong_konnect_profiles` | read | Konnect base URL + PAT + control plane id |
+| `kong_konnect_profiles` | read | Konnect admin URL + PAT + available control planes |
 | `migration_jobs` | write | One row per migration run + state machine |
 | `entity_mappings` | write | Source-id → Kong-UUID mapping table (idempotency) |
 | `migration_reports` | write | Per-job final report (outcomes + warnings + diff) |
@@ -162,8 +162,8 @@ are already running against the same MongoDB cluster.
 curl -X POST http://localhost:8082/config/v1/kong-konnect/profiles \
   -H "Content-Type: application/json" -H "X-Partner-Id: probestack" \
   -d '{"companyName":"probestack","profileName":"primary",
-       "konnectBaseUrl":"https://us.api.konghq.com",
-       "konnectAccessToken":"kpat_...","controlPlaneId":"43dbc26e-...",
+       "adminUrl":"https://us.api.konghq.com",
+       "konnectPat":"kpat_...",
        "region":"us","userEmail":"sdmoh@local"}'
 
 # 2. Discover WSO2 (writes snapshots the migration service will read)

@@ -10,6 +10,8 @@ import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.util.List;
+
 /**
  * Reads Kong Konnect profiles written by the profile-config service from the
  * {@code kong_konnect_profiles} collection. Falls back to the static
@@ -31,16 +33,17 @@ public class KongKonnectProfileReader {
         if (StringUtils.hasText(companyName)) {
             String desiredName = StringUtils.hasText(profileName) ? profileName : "primary";
             Query q = Query.query(Criteria.where("companyName").is(companyName)
-                    .and("profileName").is(desiredName));
+                    .and("profileName").is(desiredName)
+                    .and("status").is("ACTIVE"));
             Document doc = mongoTemplate.findOne(q, Document.class,
                     props.getKongKonnectProfilesCollection());
             if (doc != null) {
                 log.debug("Using Kong Konnect profile (company={}, profileName={})", companyName, desiredName);
                 return KongKonnectCredentials.builder()
                         .source("profile")
-                        .konnectBaseUrl(doc.getString("konnectBaseUrl"))
-                        .konnectAccessToken(doc.getString("konnectAccessToken"))
-                        .controlPlaneId(doc.getString("controlPlaneId"))
+                        .konnectBaseUrl(doc.getString("adminUrl"))
+                        .konnectAccessToken(doc.getString("konnectPat"))
+                        .controlPlaneId(firstControlPlaneId(doc))
                         .region(doc.getString("region"))
                         .build();
             }
@@ -53,5 +56,18 @@ public class KongKonnectProfileReader {
                 .controlPlaneId(props.getKonnect().getControlPlaneIdFallback())
                 .region("us")
                 .build();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String firstControlPlaneId(Document doc) {
+        Object value = doc.get("controlPlanes");
+        if (!(value instanceof List<?> controlPlanes) || controlPlanes.isEmpty()) {
+            return null;
+        }
+        Object first = controlPlanes.get(0);
+        if (!(first instanceof Document controlPlane)) {
+            return null;
+        }
+        return controlPlane.getString("controlPlaneId");
     }
 }
