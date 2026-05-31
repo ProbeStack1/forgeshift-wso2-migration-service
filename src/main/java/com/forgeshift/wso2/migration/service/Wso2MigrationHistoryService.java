@@ -97,9 +97,13 @@ public class Wso2MigrationHistoryService {
             String requestTransactionId, Integer revision) {
 
         List<MigrationJob> jobs = jobRepository.findByRequestTransactionId(requestTransactionId);
+        // requestTransactionId already uniquely identifies the run; only use
+        // revision to narrow when the job actually recorded a sourceRevision.
+        // A WSO2 job's sourceRevision is often null (set only once a discovery
+        // snapshot is resolved), so a null-revision job must NOT be excluded here.
         if (revision != null) {
             jobs = jobs.stream()
-                    .filter(j -> revision.equals(j.getSourceRevision()))
+                    .filter(j -> j.getSourceRevision() == null || revision.equals(j.getSourceRevision()))
                     .collect(Collectors.toList());
         }
 
