@@ -16,5 +16,7 @@ public interface MigrationJobRepository extends MongoRepository<MigrationJob, St
 
     List<MigrationJob> findByCompanyNameAndWso2Tenant(String companyName, String wso2Tenant);
 
+    List<MigrationJob> findByRequestTransactionId(String requestTransactionId);
+
     Page<MigrationJob> findByState(MigrationState state, Pageable pageable);
 }

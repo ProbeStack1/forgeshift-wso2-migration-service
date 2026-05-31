@@ -1,5 +1,6 @@
 package com.forgeshift.wso2.migration.controller;
 
+import com.forgeshift.wso2.migration.dto.Wso2MigrationHistoryDetailResponse;
 import com.forgeshift.wso2.migration.dto.Wso2MigrationHistorySummaryItem;
 import com.forgeshift.wso2.migration.service.Wso2MigrationHistoryService;
 import org.springframework.http.ResponseEntity;
@@ -38,5 +39,21 @@ public class Wso2MigrationHistoryController {
         List<Wso2MigrationHistorySummaryItem> response =
                 historyService.getMigrationHistorySummary(companyName, wso2Tenant, environment);
         return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Detail API.
+     * Drill-down for a single migration run: returns one per-resource-type
+     * summary-detail record for the given requestTransactionId (optionally
+     * narrowed by revision). Mirrors the Apigee GET /apigee/history/detail
+     * endpoint ({ records: [...] }) in WSO2 types.
+     */
+    @GetMapping("/wso2/history/detail")
+    public ResponseEntity<Wso2MigrationHistoryDetailResponse> getMigrationHistoryDetail(
+            @RequestParam("requestTransactionId") String requestTransactionId,
+            @RequestParam(value = "revision", required = false) Integer revision
+    ) {
+        return ResponseEntity.ok(
+                historyService.getMigrationHistoryDetail(requestTransactionId, revision));
     }
 }

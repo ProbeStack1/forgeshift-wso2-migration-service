@@ -1,8 +1,12 @@
 package com.forgeshift.wso2.migration.service;
 
 import com.forgeshift.wso2.migration.domain.MigrationJob;
+import com.forgeshift.wso2.migration.domain.MigrationReport;
+import com.forgeshift.wso2.migration.dto.Wso2MigrationHistoryDetailRecord;
+import com.forgeshift.wso2.migration.dto.Wso2MigrationHistoryDetailResponse;
 import com.forgeshift.wso2.migration.dto.Wso2MigrationHistorySummaryItem;
 import com.forgeshift.wso2.migration.repository.MigrationJobRepository;
+import com.forgeshift.wso2.migration.repository.MigrationReportRepository;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -25,9 +29,12 @@ import java.util.stream.Collectors;
 public class Wso2MigrationHistoryService {
 
     private final MigrationJobRepository jobRepository;
+    private final MigrationReportRepository reportRepository;
 
-    public Wso2MigrationHistoryService(MigrationJobRepository jobRepository) {
+    public Wso2MigrationHistoryService(MigrationJobRepository jobRepository,
+                                       MigrationReportRepository reportRepository) {
         this.jobRepository = jobRepository;
+        this.reportRepository = reportRepository;
     }
 
     public List<Wso2MigrationHistorySummaryItem> getMigrationHistorySummary(
@@ -77,5 +84,85 @@ public class Wso2MigrationHistoryService {
                 Comparator.nullsLast(Comparator.reverseOrder())));
 
         return result;
+    }
+
+    /**
+     * Detail / drill-down for a single migration run — the WSO2 mirror of the
+     * Apigee {@code getMigrationHistoryDetail}. Given a run's
+     * {@code requestTransactionId} (optionally narrowed by {@code revision}),
+     * returns one summary-detail record per resource type, sourced from the
+     * job's {@code resourceProgress} and the {@code MigrationReport.outcomes}.
+     */
+    public Wso2MigrationHistoryDetailResponse getMigrationHistoryDetail(
+            String requestTransactionId, Integer revision) {
+
+        List<MigrationJob> jobs = jobRepository.findByRequestTransactionId(requestTransactionId);
+        if (revision != null) {
+            jobs = jobs.stream()
+                    .filter(j -> revision.equals(j.getSourceRevision()))
+                    .collect(Collectors.toList());
+        }
+
+        List<Wso2MigrationHistoryDetailRecord> records = new ArrayList<>();
+
+        for (MigrationJob job : jobs) {
+            Map<String, MigrationJob.ResourceProgress> progress =
+                    job.getResourceProgress() != null ? job.getResourceProgress() : Map.of();
+
+            MigrationReport report = reportRepository.findByMigrationJobId(job.getId()).orElse(null);
+
+            if (report != null && report.getOutcomes() != null && !report.getOutcomes().isEmpty()) {
+                // Prefer the report's per-type outcomes (they carry skipped + failedSourceIds).
+                for (MigrationReport.ResourceOutcome outcome : report.getOutcomes()) {
+                    records.add(buildDetailRecord(job, outcome.getResourceType(),
+                            outcome, progress.get(outcome.getResourceType())));
+                }
+            } else {
+                // No report yet — fall back to the job's per-type progress.
+                for (Map.Entry<String, MigrationJob.ResourceProgress> e : progress.entrySet()) {
+                    records.add(buildDetailRecord(job, e.getKey(), null, e.getValue()));
+                }
+            }
+        }
+
+        return Wso2MigrationHistoryDetailResponse.builder().records(records).build();
+    }
+
+    private Wso2MigrationHistoryDetailRecord buildDetailRecord(
+            MigrationJob job, String resourceType,
+            MigrationReport.ResourceOutcome outcome,
+            MigrationJob.ResourceProgress progress) {
+
+        var builder = Wso2MigrationHistoryDetailRecord.builder()
+                .requestTransactionId(job.getRequestTransactionId())
+                .revision(job.getSourceRevision())
+                .companyName(job.getCompanyName())
+                .wso2Tenant(job.getWso2Tenant())
+                .controlPlaneId(job.getControlPlaneId())
+                .resourceType(resourceType)
+                .createdDateTime(job.getCreatedAt());
+
+        if (outcome != null) {
+            builder.translated(outcome.getTranslated())
+                    .deployed(outcome.getDeployed())
+                    .unchanged(outcome.getUnchanged())
+                    .failed(outcome.getFailed())
+                    .skipped(outcome.getSkipped())
+                    .failedSourceIds(outcome.getFailedSourceIds());
+        } else if (progress != null) {
+            builder.translated(progress.getTranslated())
+                    .deployed(progress.getDeployed())
+                    .unchanged(progress.getUnchanged())
+                    .failed(progress.getFailed());
+        }
+
+        if (progress != null) {
+            builder.state(progress.getState())
+                    .lastError(progress.getLastError())
+                    .startedAt(progress.getStartedAt())
+                    .completedAt(progress.getCompletedAt());
+        }
+
+        return builder.build();
     }
 }
