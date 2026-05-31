@@ -18,8 +18,8 @@ import java.util.stream.Collectors;
  * <p>Returns one summary row per unique {@code (requestTransactionId + revision)},
  * stamped with that run's earliest {@code createdDateTime}, newest first.
  * WSO2 migration jobs are scoped by {@code (companyName, wso2Tenant)} — there is
- * no per-job environment, so {@code env} is echoed into each row for response
- * parity rather than used to filter.
+ * no per-job environment, so {@code environment} is echoed into each row for
+ * response parity rather than used to filter.
  */
 @Service
 public class Wso2MigrationHistoryService {
@@ -31,13 +31,16 @@ public class Wso2MigrationHistoryService {
     }
 
     public List<Wso2MigrationHistorySummaryItem> getMigrationHistorySummary(
-            String companyName, String org, String env) {
+            String companyName, String wso2Tenant, String environment) {
 
-        List<MigrationJob> allRecords = jobRepository.findByCompanyNameAndWso2Tenant(companyName, org);
+        List<MigrationJob> allRecords = jobRepository.findByCompanyNameAndWso2Tenant(companyName, wso2Tenant);
 
-        // Filter out null requestTransactionId or revision
+        // Filter out records without a transaction id. (Unlike Apigee, a WSO2
+        // migration job's sourceRevision is only populated once the run resolves
+        // its discovery snapshot, so it is NOT required here — otherwise pending
+        // or revision-less jobs would be dropped entirely.)
         List<MigrationJob> validRecords = allRecords.stream()
-                .filter(r -> r.getRequestTransactionId() != null && r.getSourceRevision() != null)
+                .filter(r -> r.getRequestTransactionId() != null)
                 .collect(Collectors.toList());
 
         // Group by requestTransactionId + revision
@@ -62,7 +65,7 @@ public class Wso2MigrationHistoryService {
                     .createdDateTime(first.getCreatedAt())
                     .companyName(first.getCompanyName())
                     .wso2Tenant(first.getWso2Tenant())
-                    .environment(env)
+                    .environment(environment)
                     .controlPlaneId(first.getControlPlaneId())
                     .konnectBaseUrl(first.getKonnectBaseUrl())
                     .build());

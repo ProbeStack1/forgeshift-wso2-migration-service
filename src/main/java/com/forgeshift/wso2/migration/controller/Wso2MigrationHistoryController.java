@@ -26,17 +26,17 @@ public class Wso2MigrationHistoryController {
      * Summary API.
      * Returns one row per unique (requestTransactionId + revision) with the
      * earliest createdDateTime, newest first. Mirrors the Apigee
-     * GET /apigee/history/summary endpoint (same request params companyName/org/env,
-     * same response shape) in WSO2 vocabulary.
+     * GET /apigee/history/summary endpoint, using WSO2-standard request params
+     * (companyName / wso2Tenant / environment).
      */
     @GetMapping("/wso2/history/summary")
     public ResponseEntity<List<Wso2MigrationHistorySummaryItem>> getMigrationHistorySummary(
             @RequestParam("companyName") String companyName,
-            @RequestParam("org") String org,
-            @RequestParam("env") String env
+            @RequestParam("wso2Tenant") String wso2Tenant,
+            @RequestParam("environment") String environment
     ) {
         List<Wso2MigrationHistorySummaryItem> response =
-                historyService.getMigrationHistorySummary(companyName, org, env);
+                historyService.getMigrationHistorySummary(companyName, wso2Tenant, environment);
         return ResponseEntity.ok(response);
     }
 }
