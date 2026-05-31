@@ -62,6 +62,7 @@ public class MigrationProperties {
         private String targetsPath = "/upstreams/{upstreamId}/targets";
         private String consumersPath = "/consumers";
         private String pluginsPath = "/plugins";
+        private String caCertificatesPath = "/ca-certificates";
     }
 
     @Data

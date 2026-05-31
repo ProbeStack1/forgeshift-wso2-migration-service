@@ -130,6 +130,41 @@ public class Wso2BundleClient {
         }
     }
 
+    /**
+     * Downloads the PEM content of one endpoint certificate from WSO2
+     * ({@code GET /api/am/publisher/v4/endpoint-certificates/{alias}/content}).
+     * The discovery/assessment snapshots carry cert metadata only, so the actual
+     * certificate must be fetched live before it can be pushed to Kong as a
+     * ca_certificate. Returns null on failure so the caller can skip-and-warn.
+     */
+    public String fetchCertificateContent(String accessToken, Wso2Credentials creds, String alias) {
+        String base = trimTrailingSlash(creds.getWso2BaseUrl());
+        String url = base + "/api/am/publisher/v4/endpoint-certificates/" + alias + "/content";
+        try {
+            byte[] body = webClientFor(creds).get()
+                    .uri(url)
+                    .header("Authorization", "Bearer " + accessToken)
+                    .accept(MediaType.APPLICATION_OCTET_STREAM, MediaType.TEXT_PLAIN,
+                            MediaType.parseMediaType("application/x-x509-ca-cert"))
+                    .retrieve()
+                    .bodyToMono(byte[].class)
+                    .timeout(Duration.ofSeconds(props.getWso2().getTimeoutSeconds()))
+                    .block();
+            if (body == null || body.length == 0) {
+                log.warn("WSO2 endpoint-certificate content empty for alias={}", alias);
+                return null;
+            }
+            return new String(body, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (WebClientResponseException e) {
+            log.warn("fetchCertificateContent({}) failed: status={} body={}",
+                    alias, e.getStatusCode(), e.getResponseBodyAsString());
+            return null;
+        } catch (Exception e) {
+            log.warn("fetchCertificateContent({}) failed: {}", alias, e.getMessage());
+            return null;
+        }
+    }
+
     private WebClient webClientFor(Wso2Credentials creds) {
         HttpClient http = HttpClient.create()
                 .responseTimeout(Duration.ofSeconds(props.getWso2().getTimeoutSeconds()));

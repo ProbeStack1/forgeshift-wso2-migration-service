@@ -171,7 +171,7 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Partner-Id", "value": "{{tenantHeader}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"userEmail\": \"{{userEmail}}\",\n  \"requestTransactionId\": \"{{autoTxId}}\",\n  \"requestSource\": \"{{requestSource}}\",\n  \"applications\": [\n    \"b565e6b9-4e6f-4445-a70f-d1eb9addf829\"\n  ]\n}" },
+            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"sourceGateway\": \"wso2-apim\",\n  \"targetGateway\": \"kong-konnect\",\n  \"envClassification\": \"production\",\n  \"kongRegion\": \"{{kongRegion}}\",\n  \"kongCtrlPlanId\": \"{{kongCtrlPlanId}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"userEmail\": \"{{userEmail}}\",\n  \"requestTransactionId\": \"{{autoTxId}}\",\n  \"requestSource\": \"{{requestSource}}\",\n  \"dryRun\": false,\n  \"applications\": [\n    \"b565e6b9-4e6f-4445-a70f-d1eb9addf829\"\n  ]\n}" },
             "url": { "raw": "{{baseUrl}}/konnect/wso2/applications", "host": ["{{baseUrl}}"], "path": ["konnect", "wso2", "applications"] }
           }
         },
@@ -194,7 +194,7 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Partner-Id", "value": "{{tenantHeader}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"userEmail\": \"{{userEmail}}\",\n  \"requestTransactionId\": \"{{autoTxId}}\",\n  \"requestSource\": \"{{requestSource}}\",\n  \"subscriptions\": [\n    \"<subscription-sourceId>\"\n  ]\n}" },
+            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"sourceGateway\": \"wso2-apim\",\n  \"targetGateway\": \"kong-konnect\",\n  \"envClassification\": \"production\",\n  \"kongRegion\": \"{{kongRegion}}\",\n  \"kongCtrlPlanId\": \"{{kongCtrlPlanId}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"userEmail\": \"{{userEmail}}\",\n  \"requestTransactionId\": \"{{autoTxId}}\",\n  \"requestSource\": \"{{requestSource}}\",\n  \"dryRun\": false,\n  \"subscriptions\": [\n    \"<subscription-sourceId>\"\n  ]\n}" },
             "url": { "raw": "{{baseUrl}}/konnect/wso2/subscriptions", "host": ["{{baseUrl}}"], "path": ["konnect", "wso2", "subscriptions"] },
             "description": "Loads ALL application snapshots for the tenant (unfiltered) so each requested subscription can be matched to its parent application — only the listed subscriptions are translated. The application's consumer is created/updated as a side effect."
           }
@@ -218,7 +218,7 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Partner-Id", "value": "{{tenantHeader}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"userEmail\": \"{{userEmail}}\",\n  \"requestTransactionId\": \"{{autoTxId}}\",\n  \"requestSource\": \"{{requestSource}}\",\n  \"throttlingpolicies\": [\n    \"<policy-sourceId>\"\n  ]\n}" },
+            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"sourceGateway\": \"wso2-apim\",\n  \"targetGateway\": \"kong-konnect\",\n  \"envClassification\": \"production\",\n  \"kongRegion\": \"{{kongRegion}}\",\n  \"kongCtrlPlanId\": \"{{kongCtrlPlanId}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"userEmail\": \"{{userEmail}}\",\n  \"requestTransactionId\": \"{{autoTxId}}\",\n  \"requestSource\": \"{{requestSource}}\",\n  \"dryRun\": false,\n  \"throttlingpolicies\": [\n    \"<policy-sourceId>\"\n  ]\n}" },
             "url": { "raw": "{{baseUrl}}/konnect/wso2/throttling-policies", "host": ["{{baseUrl}}"], "path": ["konnect", "wso2", "throttling-policies"] }
           }
         },
@@ -241,7 +241,7 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Partner-Id", "value": "{{tenantHeader}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"userEmail\": \"{{userEmail}}\",\n  \"requestTransactionId\": \"{{autoTxId}}\",\n  \"requestSource\": \"{{requestSource}}\",\n  \"keymanagers\": [\n    \"<key-manager-sourceId>\"\n  ]\n}" },
+            "body": { "mode": "raw", "raw": "{\n  \"companyName\": \"{{companyName}}\",\n  \"wso2Tenant\": \"{{wso2Tenant}}\",\n  \"sourceGateway\": \"wso2-apim\",\n  \"targetGateway\": \"kong-konnect\",\n  \"envClassification\": \"production\",\n  \"kongRegion\": \"{{kongRegion}}\",\n  \"kongCtrlPlanId\": \"{{kongCtrlPlanId}}\",\n  \"kongProfileName\": \"{{kongProfileName}}\",\n  \"userEmail\": \"{{userEmail}}\",\n  \"requestTransactionId\": \"{{autoTxId}}\",\n  \"requestSource\": \"{{requestSource}}\",\n  \"dryRun\": false,\n  \"keymanagers\": [\n    \"<key-manager-sourceId>\"\n  ]\n}" },
             "url": { "raw": "{{baseUrl}}/konnect/wso2/key-managers", "host": ["{{baseUrl}}"], "path": ["konnect", "wso2", "key-managers"] }
           }
         }

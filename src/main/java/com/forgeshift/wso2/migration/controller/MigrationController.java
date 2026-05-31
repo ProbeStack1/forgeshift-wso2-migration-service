@@ -163,6 +163,16 @@ public class MigrationController {
         return runMigration(internal, async);
     }
 
+    @PostMapping("/konnect/wso2/certificates")
+    public ResponseEntity<?> migrateSelectedCertificates(
+            @Valid @RequestBody com.forgeshift.wso2.migration.dto.Wso2MigrateCertificatesRequest req,
+            @RequestParam(defaultValue = "false") boolean async) {
+        StartMigrationRequest internal = toInternal(req);
+        internal.setResourceTypes(List.of("certificates"));
+        internal.setResourceFilters(Map.of("certificates", req.getCertificates()));
+        return runMigration(internal, async);
+    }
+
     /**
      * Copy every common audit/target field from the Apigee-style request
      * into the internal {@link StartMigrationRequest}. The per-resource

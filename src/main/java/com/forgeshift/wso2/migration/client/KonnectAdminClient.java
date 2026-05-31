@@ -390,6 +390,7 @@ public class KonnectAdminClient {
             case UPSTREAM  -> base + props.getKonnect().getUpstreamsPath();
             case CONSUMER  -> base + props.getKonnect().getConsumersPath();
             case PLUGIN    -> base + props.getKonnect().getPluginsPath();
+            case CA_CERTIFICATE -> base + props.getKonnect().getCaCertificatesPath();
             case TARGET    -> {
                 if (!StringUtils.hasText(parentUuid)) {
                     throw new IllegalArgumentException("TARGET requires parentUuid (the upstream id)");

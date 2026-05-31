@@ -6,5 +6,6 @@ public enum KongEntityType {
     UPSTREAM,
     TARGET,
     CONSUMER,
-    PLUGIN
+    PLUGIN,
+    CA_CERTIFICATE
 }

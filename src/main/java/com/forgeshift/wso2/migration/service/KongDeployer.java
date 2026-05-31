@@ -3,6 +3,7 @@ package com.forgeshift.wso2.migration.service;
 import com.forgeshift.wso2.migration.client.KonnectAdminClient;
 import com.forgeshift.wso2.migration.client.KonnectUpsertResult;
 import com.forgeshift.wso2.migration.domain.MigrationJob;
+import com.forgeshift.wso2.migration.domain.kong.KongCaCertificate;
 import com.forgeshift.wso2.migration.domain.kong.KongConsumer;
 import com.forgeshift.wso2.migration.domain.kong.KongEntityType;
 import com.forgeshift.wso2.migration.domain.kong.KongPlugin;
@@ -12,6 +13,7 @@ import com.forgeshift.wso2.migration.domain.kong.KongTarget;
 import com.forgeshift.wso2.migration.domain.kong.KongUpstream;
 import com.forgeshift.wso2.migration.reader.KongKonnectCredentials;
 import com.forgeshift.wso2.migration.translator.TranslatedApi;
+import com.forgeshift.wso2.migration.translator.TranslatedCertificate;
 import com.forgeshift.wso2.migration.translator.TranslatedConsumer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -148,6 +150,24 @@ public class KongDeployer {
                     pl.getTags(), pl);
             tally(out, pr, KongEntityType.PLUGIN, pl.getName() + " (consumer:" + consumer.getUsername() + ")");
         }
+        return out;
+    }
+
+    /** Deploy one translated WSO2 endpoint certificate as a Kong ca_certificate. */
+    public DeployOutcome deployCertificate(KongKonnectCredentials creds, TranslatedCertificate cert,
+                                           MigrationJob job) {
+        DeployOutcome out = new DeployOutcome();
+        KongCaCertificate payload = cert.getCaCertificate();
+        if (payload == null || payload.getCert() == null || payload.getCert().isBlank()) {
+            out.failed++;
+            out.errors.add("Certificate '" + cert.getWso2SourceName() + "' has no content; skipped.");
+            log.warn("Skipping certificate {} — no PEM content to deploy", cert.getWso2SourceName());
+            return out;
+        }
+        KonnectUpsertResult r = client.upsert(creds, KongEntityType.CA_CERTIFICATE, null,
+                job.getCompanyName(), job.getWso2Tenant(), job.getId(),
+                "cacert:" + cert.getWso2SourceId(), payload.getTags(), payload);
+        tally(out, r, KongEntityType.CA_CERTIFICATE, cert.getWso2SourceName());
         return out;
     }
 

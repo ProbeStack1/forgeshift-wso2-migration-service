@@ -13,9 +13,12 @@ import com.forgeshift.wso2.migration.reader.Wso2Credentials;
 import com.forgeshift.wso2.migration.reader.Wso2ProfileReader;
 import com.forgeshift.wso2.migration.repository.MigrationJobRepository;
 import com.forgeshift.wso2.migration.repository.MigrationReportRepository;
+import com.forgeshift.wso2.migration.client.Wso2BundleClient;
 import com.forgeshift.wso2.migration.translator.ApiTranslator;
+import com.forgeshift.wso2.migration.translator.CertificateTranslator;
 import com.forgeshift.wso2.migration.translator.SubscriptionTranslator;
 import com.forgeshift.wso2.migration.translator.TranslatedApi;
+import com.forgeshift.wso2.migration.translator.TranslatedCertificate;
 import com.forgeshift.wso2.migration.translator.TranslatedConsumer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -51,6 +54,8 @@ public class MigrationService {
     private final Wso2BundleDownloadService bundleDownloadService;
     private final ApiTranslator apiTranslator;
     private final SubscriptionTranslator subscriptionTranslator;
+    private final CertificateTranslator certificateTranslator;
+    private final Wso2BundleClient wso2BundleClient;
     private final KongDeployer deployer;
     @Qualifier("migrationExecutor")
     private final TaskExecutor migrationExecutor;
@@ -201,7 +206,40 @@ public class MigrationService {
                 recordProgress(job, "subscriptions", "TRANSLATED", translatedConsumers.size(), 0, null);
             }
 
-            job.getCounts().setTotalTranslated(translatedApis.size() + translatedConsumers.size());
+            // Certificates: the snapshots carry metadata only, so fetch each cert's
+            // PEM content live from WSO2, then translate to Kong ca_certificates.
+            // Missing content degrades to a skip-and-warn (no Kong write).
+            List<TranslatedCertificate> translatedCertificates = new ArrayList<>();
+            List<DiscoverySnapshot> certSnapshots = byType.getOrDefault("certificates", List.of());
+            if (!certSnapshots.isEmpty()) {
+                String certToken = null;
+                if (wso2Creds != null && !"missing".equals(wso2Creds.getSource())) {
+                    try {
+                        certToken = wso2BundleClient.acquireToken(wso2Creds);
+                    } catch (Exception e) {
+                        log.warn("Certificate content fetch skipped — WSO2 token failed: {}", e.getMessage());
+                    }
+                }
+                for (DiscoverySnapshot s : certSnapshots) {
+                    String pem = null;
+                    if (certToken != null) {
+                        try {
+                            pem = wso2BundleClient.fetchCertificateContent(certToken, wso2Creds, s.getSourceId());
+                        } catch (Exception e) {
+                            log.warn("Certificate content fetch failed for {}: {}", s.getSourceId(), e.getMessage());
+                        }
+                    }
+                    TranslatedCertificate tc = certificateTranslator.translate(s, pem);
+                    translatedCertificates.add(tc);
+                    for (String w : tc.getWarnings()) {
+                        warnings.add(warn("certificates", s, "TRANSLATION_NOTE", w));
+                    }
+                }
+                recordProgress(job, "certificates", "TRANSLATED", translatedCertificates.size(), 0, null);
+            }
+
+            job.getCounts().setTotalTranslated(
+                    translatedApis.size() + translatedConsumers.size() + translatedCertificates.size());
             jobRepository.save(job);
 
             // ----- DRY RUN OR DEPLOY -----
@@ -260,6 +298,27 @@ public class MigrationService {
                         translatedConsumers.size(), consCreated + consUpdated,
                         consFailed > 0 ? consFailed + " entit(ies) failed across "
                                 + failedConsumerIds.size() + " consumer(s)" : null);
+            }
+
+            int certCreated = 0, certUpdated = 0, certFailed = 0;
+            List<String> failedCertIds = new ArrayList<>();
+            for (TranslatedCertificate tc : translatedCertificates) {
+                KongDeployer.DeployOutcome o = deployer.deployCertificate(creds, tc, job);
+                totalDeployed += (o.created + o.updated);
+                totalUnchanged += o.unchanged;
+                totalFailed += o.failed;
+                certCreated += o.created;
+                certUpdated += o.updated;
+                if (o.failed > 0) {
+                    certFailed += o.failed;
+                    failedCertIds.add(tc.getWso2SourceId());
+                }
+            }
+            if (!translatedCertificates.isEmpty()) {
+                recordProgress(job, "certificates", "COMPLETED",
+                        translatedCertificates.size(), certCreated + certUpdated,
+                        certFailed > 0 ? certFailed + " certificate(s) failed across "
+                                + failedCertIds.size() + " cert(s)" : null);
             }
 
             job.getCounts().setTotalDeployed(totalDeployed);
