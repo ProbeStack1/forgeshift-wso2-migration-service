@@ -2,6 +2,7 @@ package com.forgeshift.wso2.migration.service;
 
 import com.forgeshift.wso2.migration.client.KonnectAdminClient;
 import com.forgeshift.wso2.migration.client.KonnectUpsertResult;
+import com.forgeshift.wso2.migration.domain.EntityMapping;
 import com.forgeshift.wso2.migration.domain.MigrationJob;
 import com.forgeshift.wso2.migration.domain.kong.KongCaCertificate;
 import com.forgeshift.wso2.migration.domain.kong.KongConsumer;
@@ -12,7 +13,9 @@ import com.forgeshift.wso2.migration.domain.kong.KongService;
 import com.forgeshift.wso2.migration.domain.kong.KongTarget;
 import com.forgeshift.wso2.migration.domain.kong.KongUpstream;
 import com.forgeshift.wso2.migration.reader.KongKonnectCredentials;
+import com.forgeshift.wso2.migration.repository.EntityMappingRepository;
 import com.forgeshift.wso2.migration.translator.TranslatedApi;
+import com.forgeshift.wso2.migration.translator.TranslatedApiProduct;
 import com.forgeshift.wso2.migration.translator.TranslatedCertificate;
 import com.forgeshift.wso2.migration.translator.TranslatedConsumer;
 import lombok.RequiredArgsConstructor;
@@ -44,6 +47,7 @@ import java.util.Map;
 public class KongDeployer {
 
     private final KonnectAdminClient client;
+    private final EntityMappingRepository mappingRepo;
 
     /** Deploy one translated API. Returns per-entity outcome counts rolled up. */
     public DeployOutcome deployApi(KongKonnectCredentials creds, TranslatedApi api,
@@ -168,6 +172,53 @@ public class KongDeployer {
                 job.getCompanyName(), job.getWso2Tenant(), job.getId(),
                 "cacert:" + cert.getWso2SourceId(), payload.getTags(), payload);
         tally(out, r, KongEntityType.CA_CERTIFICATE, cert.getWso2SourceName());
+        return out;
+    }
+
+    /**
+     * Deploy one translated API Product: each product route is attached to its
+     * member API's Kong service (resolved from entity_mappings). Member APIs that
+     * weren't migrated yet have no service mapping — those routes are skipped and
+     * counted as failures.
+     */
+    public DeployOutcome deployApiProduct(KongKonnectCredentials creds, TranslatedApiProduct product,
+                                          MigrationJob job) {
+        DeployOutcome out = new DeployOutcome();
+        for (TranslatedApiProduct.ProductRoute pr : product.getRoutes()) {
+            java.util.Optional<EntityMapping> svc = mappingRepo
+                    .findByControlPlaneIdAndWso2SourceIdAndKongEntityTypeAndParentKongUuid(
+                            creds.getControlPlaneId(), pr.getMemberApiId(),
+                            KongEntityType.SERVICE.name(), "_");
+            if (svc.isEmpty() || svc.get().getKongUuid() == null) {
+                out.failed++;
+                out.errors.add("Member API " + pr.getMemberApiId() + " has no Kong service; product route '"
+                        + pr.getRoute().getName() + "' skipped.");
+                log.warn("Product '{}' route '{}' skipped — member API {} not migrated",
+                        product.getWso2SourceName(), pr.getRoute().getName(), pr.getMemberApiId());
+                continue;
+            }
+            String serviceUuid = svc.get().getKongUuid();
+            KongRoute route = pr.getRoute();
+            route.setService(Map.of("id", serviceUuid));
+            KonnectUpsertResult r = client.upsert(creds, KongEntityType.ROUTE, serviceUuid,
+                    job.getCompanyName(), job.getWso2Tenant(), job.getId(),
+                    "product-route:" + product.getWso2SourceId() + ":" + route.getName(),
+                    route.getTags(), route);
+            tally(out, r, KongEntityType.ROUTE, route.getName());
+            if ("FAILED".equals(r.getAction())) continue;
+
+            // Product policies/security → route-scoped plugins (only what WSO2 had,
+            // already copied per route by the translator).
+            String routeUuid = r.getKongUuid();
+            for (KongPlugin pl : pr.getPlugins()) {
+                pl.setRoute(Map.of("id", routeUuid));
+                KonnectUpsertResult plr = client.upsert(creds, KongEntityType.PLUGIN, routeUuid,
+                        job.getCompanyName(), job.getWso2Tenant(), job.getId(),
+                        "product-plugin:" + product.getWso2SourceId() + ":" + route.getName() + ":" + pl.getName(),
+                        pl.getTags(), pl);
+                tally(out, plr, KongEntityType.PLUGIN, pl.getName() + " (product-route:" + route.getName() + ")");
+            }
+        }
         return out;
     }
 

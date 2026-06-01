@@ -64,9 +64,17 @@ public class ApiTranslator {
     public TranslatedApi translate(DiscoverySnapshot snap, Wso2ApiBundle bundle) {
         Map<String, Object> bundleApi = bundle != null && bundle.getApiJson() != null
                 ? bundle.getApiJson() : null;
-        Map<String, Object> p = bundleApi != null && !bundleApi.isEmpty()
-                ? bundleApi
-                : (snap.getPayload() != null ? snap.getPayload() : Collections.emptyMap());
+
+        // Field-level reconcile across the available views of this API. Sources are
+        // listed highest-precedence first: each field is taken from the first source
+        // that actually has a value, so the export ZIP wins but the discovery
+        // snapshot fills any gap — a partial or failed bundle never loses a field.
+        // A third source (e.g. the assessment's stored config) can be added here.
+        List<String> provenance = new ArrayList<>();
+        LinkedHashMap<String, Map<String, Object>> sources = new LinkedHashMap<>();
+        sources.put("export ZIP", bundleApi);
+        sources.put("discovery snapshot", snap.getPayload());
+        Map<String, Object> p = mergeApiSources(sources, provenance);
         String apiName = snap.getSourceName() != null ? snap.getSourceName() : str(p.get("name"));
         String apiVersion = snap.getSourceVersion() != null ? snap.getSourceVersion() : str(p.get("version"));
         String safeName = slug(apiName) + "-" + slug(apiVersion);
@@ -174,6 +182,11 @@ public class ApiTranslator {
         // --- Service-level plugins -------------------------------------------
         List<KongPlugin> svcPlugins = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
+        if (!provenance.isEmpty()) {
+            warnings.add("API " + apiName + ": " + provenance.size()
+                    + " field(s) filled from a fallback source because the export ZIP lacked them — "
+                    + provenance + ".");
+        }
 
         // 1) API-level throttling (policies array)
         List<String> policies = stringList(p.get("policies"));
@@ -435,6 +448,45 @@ public class ApiTranslator {
             return out;
         }
         return null;
+    }
+
+    /**
+     * Merge several views of the same API into one config map. {@code sources} is
+     * ordered highest-precedence first; each field is taken from the first source
+     * that has a meaningful (non-null / non-blank / non-empty) value, so lower
+     * sources only fill gaps. Fields not taken from the top source are recorded in
+     * {@code provenance} so the report can explain where each value came from.
+     */
+    private static Map<String, Object> mergeApiSources(
+            LinkedHashMap<String, Map<String, Object>> sources, List<String> provenance) {
+        Map<String, Object> merged = new LinkedHashMap<>();
+        Map<String, String> origin = new LinkedHashMap<>();
+        for (Map.Entry<String, Map<String, Object>> src : sources.entrySet()) {
+            if (src.getValue() == null) continue;
+            for (Map.Entry<String, Object> e : src.getValue().entrySet()) {
+                if (isMeaningful(e.getValue()) && !isMeaningful(merged.get(e.getKey()))) {
+                    merged.put(e.getKey(), e.getValue());
+                    origin.put(e.getKey(), src.getKey());
+                }
+            }
+        }
+        if (!sources.isEmpty()) {
+            String top = sources.keySet().iterator().next();
+            for (Map.Entry<String, String> o : origin.entrySet()) {
+                if (!top.equals(o.getValue())) {
+                    provenance.add(o.getKey() + " (from " + o.getValue() + ")");
+                }
+            }
+        }
+        return merged;
+    }
+
+    private static boolean isMeaningful(Object v) {
+        if (v == null) return false;
+        if (v instanceof CharSequence cs) return !cs.toString().isBlank();
+        if (v instanceof Collection<?> c) return !c.isEmpty();
+        if (v instanceof Map<?, ?> m) return !m.isEmpty();
+        return true;
     }
 
     private static class EndpointInfo { List<String> urls = new ArrayList<>(); }

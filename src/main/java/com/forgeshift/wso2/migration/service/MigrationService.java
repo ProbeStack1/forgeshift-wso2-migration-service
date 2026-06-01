@@ -14,10 +14,12 @@ import com.forgeshift.wso2.migration.reader.Wso2ProfileReader;
 import com.forgeshift.wso2.migration.repository.MigrationJobRepository;
 import com.forgeshift.wso2.migration.repository.MigrationReportRepository;
 import com.forgeshift.wso2.migration.client.Wso2BundleClient;
+import com.forgeshift.wso2.migration.translator.ApiProductTranslator;
 import com.forgeshift.wso2.migration.translator.ApiTranslator;
 import com.forgeshift.wso2.migration.translator.CertificateTranslator;
 import com.forgeshift.wso2.migration.translator.SubscriptionTranslator;
 import com.forgeshift.wso2.migration.translator.TranslatedApi;
+import com.forgeshift.wso2.migration.translator.TranslatedApiProduct;
 import com.forgeshift.wso2.migration.translator.TranslatedCertificate;
 import com.forgeshift.wso2.migration.translator.TranslatedConsumer;
 import lombok.RequiredArgsConstructor;
@@ -53,6 +55,7 @@ public class MigrationService {
     private final Wso2ProfileReader wso2ProfileReader;
     private final Wso2BundleDownloadService bundleDownloadService;
     private final ApiTranslator apiTranslator;
+    private final ApiProductTranslator apiProductTranslator;
     private final SubscriptionTranslator subscriptionTranslator;
     private final CertificateTranslator certificateTranslator;
     private final Wso2BundleClient wso2BundleClient;
@@ -238,8 +241,48 @@ public class MigrationService {
                 recordProgress(job, "certificates", "TRANSLATED", translatedCertificates.size(), 0, null);
             }
 
+            // API Products: a product re-exposes operations from member APIs under
+            // its own context. (a) Ensure each member API is migrated first — we
+            // translate it and add it to translatedApis so it deploys in the API
+            // loop (registering its Kong service). Then the product's routes are
+            // attached to those member services (resolved from entity_mappings at
+            // deploy time).
+            List<TranslatedApiProduct> translatedApiProducts = new ArrayList<>();
+            List<DiscoverySnapshot> productSnapshots = byType.getOrDefault("apiproducts", List.of());
+            if (!productSnapshots.isEmpty()) {
+                Map<String, DiscoverySnapshot> apiById = new HashMap<>();
+                for (DiscoverySnapshot a : snapshotReader.findLatestRevision(
+                        req.getCompanyName(), req.getWso2Tenant(), "apis")) {
+                    if (a.getSourceId() != null) apiById.put(a.getSourceId(), a);
+                }
+                java.util.Set<String> alreadyTranslated = translatedApis.stream()
+                        .map(TranslatedApi::getWso2SourceId)
+                        .collect(java.util.stream.Collectors.toSet());
+
+                for (DiscoverySnapshot prod : productSnapshots) {
+                    TranslatedApiProduct tap = apiProductTranslator.translate(prod);
+                    translatedApiProducts.add(tap);
+                    for (String w : tap.getWarnings()) {
+                        warnings.add(warn("apiproducts", prod, "TRANSLATION_NOTE", w));
+                    }
+                    for (String memberId : tap.memberApiIds()) {
+                        if (alreadyTranslated.contains(memberId)) continue;
+                        DiscoverySnapshot apiSnap = apiById.get(memberId);
+                        if (apiSnap == null) {
+                            warnings.add(warn("apiproducts", prod, "MEMBER_API_MISSING",
+                                    "Member API " + memberId + " not found in discovery — its product routes will be skipped."));
+                            continue;
+                        }
+                        translatedApis.add(apiTranslator.translate(apiSnap));
+                        alreadyTranslated.add(memberId);
+                    }
+                }
+                recordProgress(job, "apiproducts", "TRANSLATED", translatedApiProducts.size(), 0, null);
+            }
+
             job.getCounts().setTotalTranslated(
-                    translatedApis.size() + translatedConsumers.size() + translatedCertificates.size());
+                    translatedApis.size() + translatedConsumers.size()
+                            + translatedCertificates.size() + translatedApiProducts.size());
             jobRepository.save(job);
 
             // ----- DRY RUN OR DEPLOY -----
@@ -247,7 +290,9 @@ public class MigrationService {
                 MigrationReport.DiffSummary diff = computeDiff(creds, translatedApis, translatedConsumers);
                 writeReport(job, translatedApis, translatedConsumers, warnings, diff,
                         new ResourceCounters(translatedApis.size(), 0, 0, 0, List.of()),
-                        new ResourceCounters(translatedConsumers.size(), 0, 0, 0, List.of()));
+                        new ResourceCounters(translatedConsumers.size(), 0, 0, 0, List.of()),
+                        new ResourceCounters(translatedCertificates.size(), 0, 0, 0, List.of()),
+                        new ResourceCounters(translatedApiProducts.size(), 0, 0, 0, List.of()));
                 job.setState(MigrationState.DRY_RUN_DONE);
                 job.setCompletedAt(Instant.now());
                 jobRepository.save(job);
@@ -300,7 +345,7 @@ public class MigrationService {
                                 + failedConsumerIds.size() + " consumer(s)" : null);
             }
 
-            int certCreated = 0, certUpdated = 0, certFailed = 0;
+            int certCreated = 0, certUpdated = 0, certUnchanged = 0, certFailed = 0;
             List<String> failedCertIds = new ArrayList<>();
             for (TranslatedCertificate tc : translatedCertificates) {
                 KongDeployer.DeployOutcome o = deployer.deployCertificate(creds, tc, job);
@@ -309,6 +354,7 @@ public class MigrationService {
                 totalFailed += o.failed;
                 certCreated += o.created;
                 certUpdated += o.updated;
+                certUnchanged += o.unchanged;
                 if (o.failed > 0) {
                     certFailed += o.failed;
                     failedCertIds.add(tc.getWso2SourceId());
@@ -319,6 +365,30 @@ public class MigrationService {
                         translatedCertificates.size(), certCreated + certUpdated,
                         certFailed > 0 ? certFailed + " certificate(s) failed across "
                                 + failedCertIds.size() + " cert(s)" : null);
+            }
+
+            // API Products deploy AFTER the API loop above, so each member API's
+            // Kong service already exists for the product routes to attach to.
+            int prodCreated = 0, prodUpdated = 0, prodUnchanged = 0, prodFailed = 0;
+            List<String> failedProductIds = new ArrayList<>();
+            for (TranslatedApiProduct tap : translatedApiProducts) {
+                KongDeployer.DeployOutcome o = deployer.deployApiProduct(creds, tap, job);
+                totalDeployed += (o.created + o.updated);
+                totalUnchanged += o.unchanged;
+                totalFailed += o.failed;
+                prodCreated += o.created;
+                prodUpdated += o.updated;
+                prodUnchanged += o.unchanged;
+                if (o.failed > 0) {
+                    prodFailed += o.failed;
+                    failedProductIds.add(tap.getWso2SourceId());
+                }
+            }
+            if (!translatedApiProducts.isEmpty()) {
+                recordProgress(job, "apiproducts", "COMPLETED",
+                        translatedApiProducts.size(), prodCreated + prodUpdated,
+                        prodFailed > 0 ? prodFailed + " product route(s) failed across "
+                                + failedProductIds.size() + " product(s)" : null);
             }
 
             job.getCounts().setTotalDeployed(totalDeployed);
@@ -334,8 +404,14 @@ public class MigrationService {
             ResourceCounters consCounts = new ResourceCounters(
                     translatedConsumers.size(), consCreated + consUpdated,
                     consUnchanged, consFailed, failedConsumerIds);
+            ResourceCounters certCounts = new ResourceCounters(
+                    translatedCertificates.size(), certCreated + certUpdated,
+                    certUnchanged, certFailed, failedCertIds);
+            ResourceCounters productCounts = new ResourceCounters(
+                    translatedApiProducts.size(), prodCreated + prodUpdated,
+                    prodUnchanged, prodFailed, failedProductIds);
             writeReport(job, translatedApis, translatedConsumers, warnings, null,
-                    apiCounts, consCounts);
+                    apiCounts, consCounts, certCounts, productCounts);
 
             job.setState(MigrationState.COMPLETED);
             job.setCompletedAt(Instant.now());
@@ -461,7 +537,9 @@ public class MigrationService {
                              List<MigrationReport.Warning> warnings,
                              MigrationReport.DiffSummary diff,
                              ResourceCounters apiCounts,
-                             ResourceCounters consumerCounts) {
+                             ResourceCounters consumerCounts,
+                             ResourceCounters certCounts,
+                             ResourceCounters productCounts) {
         List<MigrationReport.ResourceOutcome> outcomes = new ArrayList<>();
         if (job.getResourceTypes().contains("apis") || apiCounts.translated() > 0) {
             outcomes.add(MigrationReport.ResourceOutcome.builder()
@@ -481,6 +559,26 @@ public class MigrationService {
                     .unchanged(consumerCounts.unchanged())
                     .failed(consumerCounts.failed())
                     .failedSourceIds(consumerCounts.failedSourceIds())
+                    .build());
+        }
+        if (certCounts.translated() > 0) {
+            outcomes.add(MigrationReport.ResourceOutcome.builder()
+                    .resourceType("certificates")
+                    .translated(certCounts.translated())
+                    .deployed(certCounts.deployed())
+                    .unchanged(certCounts.unchanged())
+                    .failed(certCounts.failed())
+                    .failedSourceIds(certCounts.failedSourceIds())
+                    .build());
+        }
+        if (productCounts.translated() > 0) {
+            outcomes.add(MigrationReport.ResourceOutcome.builder()
+                    .resourceType("apiproducts")
+                    .translated(productCounts.translated())
+                    .deployed(productCounts.deployed())
+                    .unchanged(productCounts.unchanged())
+                    .failed(productCounts.failed())
+                    .failedSourceIds(productCounts.failedSourceIds())
                     .build());
         }
         MigrationReport report = MigrationReport.builder()
