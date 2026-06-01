@@ -36,6 +36,18 @@ logging:
     org.springframework.web: INFO
     org.mongodb.driver: WARN
 
+anthropic:
+  api-key: ${ANTHROPIC_API_KEY:}
+  base-url: ${ANTHROPIC_BASE_URL:https://api.anthropic.com}
+  model: ${ANTHROPIC_MODEL:claude-sonnet-4-6}
+  api-version: ${ANTHROPIC_API_VERSION:2023-06-01}
+  max-tokens: ${ANTHROPIC_MAX_TOKENS:4096}
+  temperature: ${ANTHROPIC_TEMPERATURE:0.0}
+  connect-timeout-ms: ${ANTHROPIC_CONNECT_TIMEOUT_MS:10000}
+  read-timeout-ms: ${ANTHROPIC_READ_TIMEOUT_MS:60000}
+  min-confidence: ${ANTHROPIC_MIN_CONFIDENCE:0.7}
+  max-lua-bytes: ${ANTHROPIC_MAX_LUA_BYTES:51200}
+
 gcs:
   # Reads the assessment-staged API JSON as a 3rd reconcile source (lowest precedence).
   # Mirrors the assessment service's gcs block; SA key mounted into credentials/ at runtime.
