@@ -183,6 +183,16 @@ public class MigrationController {
         return runMigration(internal, async);
     }
 
+    @PostMapping("/konnect/wso2/mediation-policies")
+    public ResponseEntity<?> migrateSelectedMediationPolicies(
+            @Valid @RequestBody com.forgeshift.wso2.migration.dto.Wso2MigrateMediationPoliciesRequest req,
+            @RequestParam(defaultValue = "false") boolean async) {
+        StartMigrationRequest internal = toInternal(req);
+        internal.setResourceTypes(List.of("mediationpolicies"));
+        internal.setResourceFilters(Map.of("mediationpolicies", req.getMediationpolicies()));
+        return runMigration(internal, async);
+    }
+
     /**
      * Copy every common audit/target field from the Apigee-style request
      * into the internal {@link StartMigrationRequest}. The per-resource

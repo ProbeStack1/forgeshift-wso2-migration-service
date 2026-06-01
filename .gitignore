@@ -5,5 +5,21 @@ target/
 *.log
 logs/
 .env
+.env.local
+.env.*.local
+
+# Credentials and secrets — mirrors the assessment / apigee-migration convention.
+# Keep the credentials/ folder structure (.gitkeep) but never commit real keys.
+# The GCS SA JSON is mounted into credentials/ at runtime, never baked in.
+credentials/*
+!credentials/.gitkeep
+firestore-credentials.json
 gcp-key.json
 service-account*.json
+*-credentials.json
+*-secret.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks

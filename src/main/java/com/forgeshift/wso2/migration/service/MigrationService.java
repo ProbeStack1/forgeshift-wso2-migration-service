@@ -5,6 +5,7 @@ import com.forgeshift.wso2.migration.domain.MigrationJob;
 import com.forgeshift.wso2.migration.domain.MigrationReport;
 import com.forgeshift.wso2.migration.domain.MigrationState;
 import com.forgeshift.wso2.migration.dto.StartMigrationRequest;
+import com.forgeshift.wso2.migration.reader.AssessmentSourceReader;
 import com.forgeshift.wso2.migration.reader.DiscoverySnapshot;
 import com.forgeshift.wso2.migration.reader.DiscoverySnapshotReader;
 import com.forgeshift.wso2.migration.reader.KongKonnectCredentials;
@@ -17,11 +18,13 @@ import com.forgeshift.wso2.migration.client.Wso2BundleClient;
 import com.forgeshift.wso2.migration.translator.ApiProductTranslator;
 import com.forgeshift.wso2.migration.translator.ApiTranslator;
 import com.forgeshift.wso2.migration.translator.CertificateTranslator;
+import com.forgeshift.wso2.migration.translator.MediationPolicyTranslator;
 import com.forgeshift.wso2.migration.translator.SubscriptionTranslator;
 import com.forgeshift.wso2.migration.translator.TranslatedApi;
 import com.forgeshift.wso2.migration.translator.TranslatedApiProduct;
 import com.forgeshift.wso2.migration.translator.TranslatedCertificate;
 import com.forgeshift.wso2.migration.translator.TranslatedConsumer;
+import com.forgeshift.wso2.migration.translator.TranslatedMediationPolicy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -58,6 +61,8 @@ public class MigrationService {
     private final ApiProductTranslator apiProductTranslator;
     private final SubscriptionTranslator subscriptionTranslator;
     private final CertificateTranslator certificateTranslator;
+    private final MediationPolicyTranslator mediationTranslator;
+    private final AssessmentSourceReader assessmentSourceReader;
     private final Wso2BundleClient wso2BundleClient;
     private final KongDeployer deployer;
     @Qualifier("migrationExecutor")
@@ -184,13 +189,77 @@ public class MigrationService {
 
             for (DiscoverySnapshot s : apiSnapshots) {
                 Wso2ApiBundle bundle = bundleResult.bundles.get(s.getSourceId());
-                TranslatedApi t = apiTranslator.translate(s, bundle);
+                // Third reconcile source: the assessment's stored API config from GCS
+                // (lowest precedence; null when GCS is off / object absent — then skipped).
+                Map<String, Object> assessmentJson = assessmentSourceReader.readApiConfig(
+                        req.getCompanyName(), req.getWso2Tenant(), req.getEnvClassification(),
+                        s.getSourceName(), s.getSourceVersion(), s.getSourceId());
+                TranslatedApi t = apiTranslator.translate(s, bundle, assessmentJson);
                 translatedApis.add(t);
                 for (String w : t.getWarnings()) {
                     warnings.add(warn("apis", s, "TRANSLATION_NOTE", w));
                 }
             }
             recordProgress(job, "apis", "TRANSLATED", translatedApis.size(), 0, null);
+
+            // Mediation policies: each API's Synapse sequences (bundled in its export
+            // ZIP) → AI-translated Lua → Kong serverless plugins on that API's service.
+            // Sequences the AI can't safely translate degrade to manual-review warnings;
+            // nothing unsafe is ever deployed.
+            List<TranslatedMediationPolicy> translatedMediations = new ArrayList<>();
+            for (DiscoverySnapshot s : apiSnapshots) {
+                Wso2ApiBundle apiBundle = bundleResult.bundles.get(s.getSourceId());
+                if (apiBundle == null || apiBundle.getSequences() == null || apiBundle.getSequences().isEmpty()) {
+                    continue;
+                }
+                for (Map.Entry<String, String> seq : apiBundle.getSequences().entrySet()) {
+                    TranslatedMediationPolicy med = mediationTranslator.translate(
+                            s.getSourceId(), s.getSourceName(), seq.getKey(), seq.getValue(), flowOf(seq.getKey()));
+                    translatedMediations.add(med);
+                    for (String w : med.getWarnings()) {
+                        warnings.add(warn("mediationpolicies", s, "TRANSLATION_NOTE", w));
+                    }
+                }
+            }
+            // Standalone mediation-policy migration (UI path: POST /konnect/wso2/mediation-policies).
+            // Selected policies load as snapshots (metadata only), so fetch each one's Synapse XML
+            // live from WSO2, then AI-translate + attach to its (already-migrated) API service.
+            List<DiscoverySnapshot> medSnapshots = byType.getOrDefault("mediationpolicies", List.of());
+            if (!medSnapshots.isEmpty()) {
+                String medToken = null;
+                if (wso2Creds != null && !"missing".equals(wso2Creds.getSource())) {
+                    try {
+                        medToken = wso2BundleClient.acquireToken(wso2Creds);
+                    } catch (Exception e) {
+                        log.warn("Mediation content fetch skipped — WSO2 token failed: {}", e.getMessage());
+                    }
+                }
+                for (DiscoverySnapshot s : medSnapshots) {
+                    Map<String, String> meta = s.getMetadata() != null ? s.getMetadata() : Map.of();
+                    String apiId = meta.get("apiId");
+                    String apiName = meta.get("apiName");
+                    String flow = meta.getOrDefault("type", "in");
+                    String policyId = s.getPayload() != null && s.getPayload().get("id") != null
+                            ? s.getPayload().get("id").toString() : null;
+                    String xml = null;
+                    if (medToken != null && apiId != null && policyId != null) {
+                        try {
+                            xml = wso2BundleClient.fetchMediationPolicyContent(medToken, wso2Creds, apiId, policyId);
+                        } catch (Exception e) {
+                            log.warn("Mediation content fetch failed for {}: {}", s.getSourceId(), e.getMessage());
+                        }
+                    }
+                    TranslatedMediationPolicy med = mediationTranslator.translate(
+                            apiId != null ? apiId : s.getSourceId(), apiName, s.getSourceName(), xml, flow);
+                    translatedMediations.add(med);
+                    for (String w : med.getWarnings()) {
+                        warnings.add(warn("mediationpolicies", s, "TRANSLATION_NOTE", w));
+                    }
+                }
+            }
+            if (!translatedMediations.isEmpty()) {
+                recordProgress(job, "mediationpolicies", "TRANSLATED", translatedMediations.size(), 0, null);
+            }
 
             if (hasConsumerResources(job.getResourceTypes())) {
                 List<TranslatedConsumer> tcs = subscriptionTranslator.translate(
@@ -258,6 +327,7 @@ public class MigrationService {
                 java.util.Set<String> alreadyTranslated = translatedApis.stream()
                         .map(TranslatedApi::getWso2SourceId)
                         .collect(java.util.stream.Collectors.toSet());
+                List<DiscoverySnapshot> memberApiSnapshots = new ArrayList<>();
 
                 for (DiscoverySnapshot prod : productSnapshots) {
                     TranslatedApiProduct tap = apiProductTranslator.translate(prod);
@@ -273,8 +343,33 @@ public class MigrationService {
                                     "Member API " + memberId + " not found in discovery — its product routes will be skipped."));
                             continue;
                         }
-                        translatedApis.add(apiTranslator.translate(apiSnap));
+                        memberApiSnapshots.add(apiSnap);
                         alreadyTranslated.add(memberId);
+                    }
+                }
+                // Member APIs take the SAME full-fidelity path as directly-migrated APIs:
+                // download each one's export ZIP and translate with the ZIP + snapshot
+                // reconcile (never snapshot-only), and translate their mediation sequences too.
+                if (!memberApiSnapshots.isEmpty()) {
+                    Wso2BundleDownloadService.Result memberBundles =
+                            bundleDownloadService.download(wso2Creds, memberApiSnapshots);
+                    for (DiscoverySnapshot apiSnap : memberApiSnapshots) {
+                        Wso2ApiBundle b = memberBundles.bundles.get(apiSnap.getSourceId());
+                        Map<String, Object> mAssess = assessmentSourceReader.readApiConfig(
+                                req.getCompanyName(), req.getWso2Tenant(), req.getEnvClassification(),
+                                apiSnap.getSourceName(), apiSnap.getSourceVersion(), apiSnap.getSourceId());
+                        translatedApis.add(apiTranslator.translate(apiSnap, b, mAssess));
+                        if (b != null && b.getSequences() != null) {
+                            for (Map.Entry<String, String> seq : b.getSequences().entrySet()) {
+                                TranslatedMediationPolicy med = mediationTranslator.translate(
+                                        apiSnap.getSourceId(), apiSnap.getSourceName(),
+                                        seq.getKey(), seq.getValue(), flowOf(seq.getKey()));
+                                translatedMediations.add(med);
+                                for (String w : med.getWarnings()) {
+                                    warnings.add(warn("mediationpolicies", apiSnap, "TRANSLATION_NOTE", w));
+                                }
+                            }
+                        }
                     }
                 }
                 recordProgress(job, "apiproducts", "TRANSLATED", translatedApiProducts.size(), 0, null);
@@ -282,7 +377,8 @@ public class MigrationService {
 
             job.getCounts().setTotalTranslated(
                     translatedApis.size() + translatedConsumers.size()
-                            + translatedCertificates.size() + translatedApiProducts.size());
+                            + translatedCertificates.size() + translatedApiProducts.size()
+                            + translatedMediations.size());
             jobRepository.save(job);
 
             // ----- DRY RUN OR DEPLOY -----
@@ -292,7 +388,8 @@ public class MigrationService {
                         new ResourceCounters(translatedApis.size(), 0, 0, 0, List.of()),
                         new ResourceCounters(translatedConsumers.size(), 0, 0, 0, List.of()),
                         new ResourceCounters(translatedCertificates.size(), 0, 0, 0, List.of()),
-                        new ResourceCounters(translatedApiProducts.size(), 0, 0, 0, List.of()));
+                        new ResourceCounters(translatedApiProducts.size(), 0, 0, 0, List.of()),
+                        new ResourceCounters(translatedMediations.size(), 0, 0, 0, List.of()));
                 job.setState(MigrationState.DRY_RUN_DONE);
                 job.setCompletedAt(Instant.now());
                 jobRepository.save(job);
@@ -391,6 +488,35 @@ public class MigrationService {
                                 + failedProductIds.size() + " product(s)" : null);
             }
 
+            // Mediation policies → Kong serverless plugins on each API's service.
+            // Non-translatable sequences are counted as "manual" (not deploy failures).
+            int medCreated = 0, medUpdated = 0, medUnchanged = 0, medFailed = 0, medManual = 0;
+            List<String> failedMediationIds = new ArrayList<>();
+            for (TranslatedMediationPolicy med : translatedMediations) {
+                if (!med.isDeployable()) {
+                    medManual++;
+                    failedMediationIds.add(med.getWso2SourceId());
+                    continue;
+                }
+                KongDeployer.DeployOutcome o = deployer.deployMediationPolicy(creds, med, job);
+                totalDeployed += (o.created + o.updated);
+                totalUnchanged += o.unchanged;
+                totalFailed += o.failed;
+                medCreated += o.created;
+                medUpdated += o.updated;
+                medUnchanged += o.unchanged;
+                if (o.failed > 0) {
+                    medFailed += o.failed;
+                    failedMediationIds.add(med.getWso2SourceId());
+                }
+            }
+            if (!translatedMediations.isEmpty()) {
+                recordProgress(job, "mediationpolicies", "COMPLETED",
+                        translatedMediations.size(), medCreated + medUpdated,
+                        (medManual + medFailed) > 0
+                                ? medManual + " need manual review, " + medFailed + " deploy failure(s)" : null);
+            }
+
             job.getCounts().setTotalDeployed(totalDeployed);
             job.getCounts().setTotalUnchanged(totalUnchanged);
             job.getCounts().setTotalFailed(totalFailed);
@@ -410,8 +536,11 @@ public class MigrationService {
             ResourceCounters productCounts = new ResourceCounters(
                     translatedApiProducts.size(), prodCreated + prodUpdated,
                     prodUnchanged, prodFailed, failedProductIds);
+            ResourceCounters mediationCounts = new ResourceCounters(
+                    translatedMediations.size(), medCreated + medUpdated,
+                    medUnchanged, medManual + medFailed, failedMediationIds);
             writeReport(job, translatedApis, translatedConsumers, warnings, null,
-                    apiCounts, consCounts, certCounts, productCounts);
+                    apiCounts, consCounts, certCounts, productCounts, mediationCounts);
 
             job.setState(MigrationState.COMPLETED);
             job.setCompletedAt(Instant.now());
@@ -539,7 +668,8 @@ public class MigrationService {
                              ResourceCounters apiCounts,
                              ResourceCounters consumerCounts,
                              ResourceCounters certCounts,
-                             ResourceCounters productCounts) {
+                             ResourceCounters productCounts,
+                             ResourceCounters mediationCounts) {
         List<MigrationReport.ResourceOutcome> outcomes = new ArrayList<>();
         if (job.getResourceTypes().contains("apis") || apiCounts.translated() > 0) {
             outcomes.add(MigrationReport.ResourceOutcome.builder()
@@ -581,6 +711,16 @@ public class MigrationService {
                     .failedSourceIds(productCounts.failedSourceIds())
                     .build());
         }
+        if (mediationCounts.translated() > 0) {
+            outcomes.add(MigrationReport.ResourceOutcome.builder()
+                    .resourceType("mediationpolicies")
+                    .translated(mediationCounts.translated())
+                    .deployed(mediationCounts.deployed())
+                    .unchanged(mediationCounts.unchanged())
+                    .failed(mediationCounts.failed())
+                    .failedSourceIds(mediationCounts.failedSourceIds())
+                    .build());
+        }
         MigrationReport report = MigrationReport.builder()
                 .migrationJobId(job.getId())
                 .companyName(job.getCompanyName())
@@ -602,6 +742,15 @@ public class MigrationService {
                 .wso2SourceName(s.getSourceName())
                 .code(code).message(msg)
                 .build();
+    }
+
+    /** Infer the Synapse flow a sequence runs in from its name (in / out / fault). */
+    private static String flowOf(String sequenceName) {
+        if (sequenceName == null) return "in";
+        String n = sequenceName.toLowerCase();
+        if (n.contains("fault")) return "fault";
+        if (n.contains("out")) return "out";
+        return "in";
     }
 
     private void recordProgress(MigrationJob job, String slug, String state,

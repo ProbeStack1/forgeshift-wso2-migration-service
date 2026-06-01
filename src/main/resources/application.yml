@@ -36,6 +36,16 @@ logging:
     org.springframework.web: INFO
     org.mongodb.driver: WARN
 
+gcs:
+  # Reads the assessment-staged API JSON as a 3rd reconcile source (lowest precedence).
+  # Mirrors the assessment service's gcs block; SA key mounted into credentials/ at runtime.
+  enabled: ${GCS_ENABLED:true}
+  credentials:
+    location: ${GCS_CREDENTIALS_LOCATION:file:credentials/firestore-credentials.json}
+  project-id: ${GCS_PROJECT_ID:your-project-id}
+  default-bucket-name: ${GCS_DEFAULT_BUCKET_NAME:run-sources-probestack-e2068-us-central1}
+  migration-bucket-name: ${GCS_MIGRATION_BUCKET_NAME:run-sources-probestack-e2068-us-central1}
+
 springdoc:
   api-docs:
     path: /v3/api-docs

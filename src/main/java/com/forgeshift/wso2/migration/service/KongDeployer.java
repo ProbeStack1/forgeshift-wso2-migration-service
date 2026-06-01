@@ -18,6 +18,7 @@ import com.forgeshift.wso2.migration.translator.TranslatedApi;
 import com.forgeshift.wso2.migration.translator.TranslatedApiProduct;
 import com.forgeshift.wso2.migration.translator.TranslatedCertificate;
 import com.forgeshift.wso2.migration.translator.TranslatedConsumer;
+import com.forgeshift.wso2.migration.translator.TranslatedMediationPolicy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -219,6 +220,40 @@ public class KongDeployer {
                 tally(out, plr, KongEntityType.PLUGIN, pl.getName() + " (product-route:" + route.getName() + ")");
             }
         }
+        return out;
+    }
+
+    /**
+     * Deploy one translated mediation policy as a Kong serverless plugin attached
+     * to the target API's service (resolved from entity_mappings). Only deploys
+     * when there is safe, validated Lua; non-translatable ones are surfaced as
+     * warnings by the caller and never reach Kong.
+     */
+    public DeployOutcome deployMediationPolicy(KongKonnectCredentials creds, TranslatedMediationPolicy med,
+                                               MigrationJob job) {
+        DeployOutcome out = new DeployOutcome();
+        if (med.getPlugin() == null) {
+            return out;   // nothing safe to deploy
+        }
+        java.util.Optional<EntityMapping> svc = mappingRepo
+                .findByControlPlaneIdAndWso2SourceIdAndKongEntityTypeAndParentKongUuid(
+                        creds.getControlPlaneId(), med.getTargetApiId(),
+                        KongEntityType.SERVICE.name(), "_");
+        if (svc.isEmpty() || svc.get().getKongUuid() == null) {
+            out.failed++;
+            out.errors.add("Target API " + med.getTargetApiId() + " has no Kong service; mediation '"
+                    + med.getWso2SourceName() + "' skipped.");
+            log.warn("Mediation '{}' skipped — target API {} not migrated",
+                    med.getWso2SourceName(), med.getTargetApiId());
+            return out;
+        }
+        String serviceUuid = svc.get().getKongUuid();
+        KongPlugin pl = med.getPlugin();
+        pl.setService(Map.of("id", serviceUuid));
+        KonnectUpsertResult r = client.upsert(creds, KongEntityType.PLUGIN, serviceUuid,
+                job.getCompanyName(), job.getWso2Tenant(), job.getId(),
+                "mediation:" + med.getWso2SourceId(), pl.getTags(), pl);
+        tally(out, r, KongEntityType.PLUGIN, pl.getName() + " (mediation:" + med.getWso2SourceName() + ")");
         return out;
     }
 

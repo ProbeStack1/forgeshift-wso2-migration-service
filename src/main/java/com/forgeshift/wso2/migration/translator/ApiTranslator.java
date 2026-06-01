@@ -50,30 +50,43 @@ public class ApiTranslator {
 
     /** Back-compat / fallback path — translate from the discovery JSON payload alone. */
     public TranslatedApi translate(DiscoverySnapshot snap) {
-        return translate(snap, null);
+        return translate(snap, null, null);
+    }
+
+    /** Two-source reconcile (export ZIP + discovery snapshot); no assessment source. */
+    public TranslatedApi translate(DiscoverySnapshot snap, Wso2ApiBundle bundle) {
+        return translate(snap, bundle, null);
     }
 
     /**
-     * Translate one WSO2 API to Kong objects. When {@code bundle} is non-null
-     * its {@code apiJson} takes precedence over {@code snap.payload} (bundle
-     * data is pulled fresh at migration time, so it can't be stale). Swagger
-     * paths fill in route gaps when {@code operations[]} is empty.
-     * Sequences and certificates are surfaced as warnings — they require
+     * Translate one WSO2 API to Kong objects, reconciling up to three views of the
+     * API config in precedence order: export ZIP (freshest, pulled at migration
+     * time) → discovery snapshot → assessment-staged JSON (read from GCS). Each
+     * field is taken from the first source that actually has a value, so a higher
+     * source wins but a lower one fills any gap — a partial/failed bundle never
+     * loses a field. Swagger paths fill route gaps when {@code operations[]} is
+     * empty. Sequences and certificates are surfaced as warnings — they require
      * manual review and are not auto-translated in this phase.
+     *
+     * @param assessmentApiJson the assessment's stored API config, or null when GCS
+     *                          is disabled / the object is absent (source skipped).
      */
-    public TranslatedApi translate(DiscoverySnapshot snap, Wso2ApiBundle bundle) {
+    public TranslatedApi translate(DiscoverySnapshot snap, Wso2ApiBundle bundle,
+                                   Map<String, Object> assessmentApiJson) {
         Map<String, Object> bundleApi = bundle != null && bundle.getApiJson() != null
                 ? bundle.getApiJson() : null;
 
         // Field-level reconcile across the available views of this API. Sources are
         // listed highest-precedence first: each field is taken from the first source
         // that actually has a value, so the export ZIP wins but the discovery
-        // snapshot fills any gap — a partial or failed bundle never loses a field.
-        // A third source (e.g. the assessment's stored config) can be added here.
+        // snapshot fills any gap, and the assessment's stored config fills whatever
+        // remains — a partial or failed bundle never loses a field. Null sources are
+        // skipped by mergeApiSources, so an absent assessment config is a no-op.
         List<String> provenance = new ArrayList<>();
         LinkedHashMap<String, Map<String, Object>> sources = new LinkedHashMap<>();
         sources.put("export ZIP", bundleApi);
         sources.put("discovery snapshot", snap.getPayload());
+        sources.put("assessment config", assessmentApiJson);
         Map<String, Object> p = mergeApiSources(sources, provenance);
         String apiName = snap.getSourceName() != null ? snap.getSourceName() : str(p.get("name"));
         String apiVersion = snap.getSourceVersion() != null ? snap.getSourceVersion() : str(p.get("version"));

@@ -165,6 +165,41 @@ public class Wso2BundleClient {
         }
     }
 
+    /**
+     * Fetches the Synapse XML of one API mediation policy from WSO2
+     * ({@code GET /api/am/publisher/v4/apis/{apiId}/mediation-policies/{policyId}}).
+     * The discovery snapshot carries only metadata, so the actual sequence must be
+     * fetched before it can be AI-translated. APIM 4.x returns the XML in the
+     * {@code config} (or {@code content}) field. Returns null on failure.
+     */
+    public String fetchMediationPolicyContent(String accessToken, Wso2Credentials creds,
+                                              String apiId, String policyId) {
+        String base = trimTrailingSlash(creds.getWso2BaseUrl());
+        String url = base + "/api/am/publisher/v4/apis/" + apiId + "/mediation-policies/" + policyId;
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> bodyMap = webClientFor(creds).get()
+                    .uri(url)
+                    .header("Authorization", "Bearer " + accessToken)
+                    .accept(MediaType.APPLICATION_JSON)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .timeout(Duration.ofSeconds(props.getWso2().getTimeoutSeconds()))
+                    .block();
+            if (bodyMap == null) return null;
+            Object cfg = bodyMap.get("config");
+            if (cfg == null) cfg = bodyMap.get("content");
+            return cfg == null ? null : cfg.toString();
+        } catch (WebClientResponseException e) {
+            log.warn("fetchMediationPolicyContent({}/{}) failed: status={} body={}",
+                    apiId, policyId, e.getStatusCode(), e.getResponseBodyAsString());
+            return null;
+        } catch (Exception e) {
+            log.warn("fetchMediationPolicyContent({}/{}) failed: {}", apiId, policyId, e.getMessage());
+            return null;
+        }
+    }
+
     private WebClient webClientFor(Wso2Credentials creds) {
         HttpClient http = HttpClient.create()
                 .responseTimeout(Duration.ofSeconds(props.getWso2().getTimeoutSeconds()));
