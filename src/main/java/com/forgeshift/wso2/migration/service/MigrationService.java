@@ -51,6 +51,13 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class MigrationService {
 
+    private static final String SCOPE_MANUAL_ACTION_MESSAGE =
+            "WSO2 OAuth scopes are not auto-migrated because Kong does not have a WSO2-style "
+                    + "scope registry or role-binding store. Manual action required: recreate this scope "
+                    + "and its role/client permissions in the target IdP (Kong Identity, Keycloak, Okta, "
+                    + "Azure AD, Auth0, Cognito, etc.), then configure Kong Konnect openid-connect on "
+                    + "protected routes with scopes_claim=[scope] and scopes_required=[this scope].";
+
     private final MigrationJobRepository jobRepository;
     private final MigrationReportRepository reportRepository;
     private final DiscoverySnapshotReader snapshotReader;
@@ -186,6 +193,7 @@ public class MigrationService {
             // (warnings list already created above for BUNDLE_FAILED entries)
 
             scopeApplicationsForSelectedSubscriptions(byType, req);
+            List<DiscoverySnapshot> scopeSnapshots = byType.getOrDefault("scopes", List.of());
 
             for (DiscoverySnapshot s : apiSnapshots) {
                 Wso2ApiBundle bundle = bundleResult.bundles.get(s.getSourceId());
@@ -201,6 +209,16 @@ public class MigrationService {
                 }
             }
             recordProgress(job, "apis", "TRANSLATED", translatedApis.size(), 0, null);
+
+            if (!scopeSnapshots.isEmpty()) {
+                for (DiscoverySnapshot s : scopeSnapshots) {
+                    warnings.add(scopeManualWarning(s));
+                }
+                recordProgress(job, "scopes", "MANUAL_ACTION_REQUIRED",
+                        0, 0,
+                        scopeSnapshots.size()
+                                + " scope(s) require target IdP setup and Kong OIDC route configuration");
+            }
 
             // Mediation policies: each API's Synapse sequences (bundled in its export
             // ZIP) → AI-translated Lua → Kong serverless plugins on that API's service.
@@ -385,11 +403,12 @@ public class MigrationService {
             if (req.isDryRun()) {
                 MigrationReport.DiffSummary diff = computeDiff(creds, translatedApis, translatedConsumers);
                 writeReport(job, translatedApis, translatedConsumers, warnings, diff,
-                        new ResourceCounters(translatedApis.size(), 0, 0, 0, List.of()),
-                        new ResourceCounters(translatedConsumers.size(), 0, 0, 0, List.of()),
-                        new ResourceCounters(translatedCertificates.size(), 0, 0, 0, List.of()),
-                        new ResourceCounters(translatedApiProducts.size(), 0, 0, 0, List.of()),
-                        new ResourceCounters(translatedMediations.size(), 0, 0, 0, List.of()));
+                        new ResourceCounters(translatedApis.size(), 0, 0, 0, 0, List.of()),
+                        new ResourceCounters(translatedConsumers.size(), 0, 0, 0, 0, List.of()),
+                        new ResourceCounters(translatedCertificates.size(), 0, 0, 0, 0, List.of()),
+                        new ResourceCounters(translatedApiProducts.size(), 0, 0, 0, 0, List.of()),
+                        new ResourceCounters(translatedMediations.size(), 0, 0, 0, 0, List.of()),
+                        new ResourceCounters(0, 0, 0, 0, scopeSnapshots.size(), List.of()));
                 job.setState(MigrationState.DRY_RUN_DONE);
                 job.setCompletedAt(Instant.now());
                 jobRepository.save(job);
@@ -526,21 +545,23 @@ public class MigrationService {
             // deploys in the "apis" outcome row.
             ResourceCounters apiCounts = new ResourceCounters(
                     translatedApis.size(), apiCreated + apiUpdated,
-                    apiUnchanged, apiFailed, failedApiIds);
+                    apiUnchanged, apiFailed, 0, failedApiIds);
             ResourceCounters consCounts = new ResourceCounters(
                     translatedConsumers.size(), consCreated + consUpdated,
-                    consUnchanged, consFailed, failedConsumerIds);
+                    consUnchanged, consFailed, 0, failedConsumerIds);
             ResourceCounters certCounts = new ResourceCounters(
                     translatedCertificates.size(), certCreated + certUpdated,
-                    certUnchanged, certFailed, failedCertIds);
+                    certUnchanged, certFailed, 0, failedCertIds);
             ResourceCounters productCounts = new ResourceCounters(
                     translatedApiProducts.size(), prodCreated + prodUpdated,
-                    prodUnchanged, prodFailed, failedProductIds);
+                    prodUnchanged, prodFailed, 0, failedProductIds);
             ResourceCounters mediationCounts = new ResourceCounters(
                     translatedMediations.size(), medCreated + medUpdated,
-                    medUnchanged, medManual + medFailed, failedMediationIds);
+                    medUnchanged, medManual + medFailed, 0, failedMediationIds);
+            ResourceCounters scopeCounts = new ResourceCounters(
+                    0, 0, 0, 0, scopeSnapshots.size(), List.of());
             writeReport(job, translatedApis, translatedConsumers, warnings, null,
-                    apiCounts, consCounts, certCounts, productCounts, mediationCounts);
+                    apiCounts, consCounts, certCounts, productCounts, mediationCounts, scopeCounts);
 
             job.setState(MigrationState.COMPLETED);
             job.setCompletedAt(Instant.now());
@@ -659,7 +680,7 @@ public class MigrationService {
      * instead of the leaky job-level totals the earlier impl used.
      */
     private record ResourceCounters(int translated, int deployed, int unchanged,
-                                    int failed, List<String> failedSourceIds) {}
+                                    int failed, int skipped, List<String> failedSourceIds) {}
 
     private void writeReport(MigrationJob job, List<TranslatedApi> apis,
                              List<TranslatedConsumer> consumers,
@@ -669,7 +690,8 @@ public class MigrationService {
                              ResourceCounters consumerCounts,
                              ResourceCounters certCounts,
                              ResourceCounters productCounts,
-                             ResourceCounters mediationCounts) {
+                             ResourceCounters mediationCounts,
+                             ResourceCounters scopeCounts) {
         List<MigrationReport.ResourceOutcome> outcomes = new ArrayList<>();
         if (job.getResourceTypes().contains("apis") || apiCounts.translated() > 0) {
             outcomes.add(MigrationReport.ResourceOutcome.builder()
@@ -678,6 +700,7 @@ public class MigrationService {
                     .deployed(apiCounts.deployed())
                     .unchanged(apiCounts.unchanged())
                     .failed(apiCounts.failed())
+                    .skipped(apiCounts.skipped())
                     .failedSourceIds(apiCounts.failedSourceIds())
                     .build());
         }
@@ -688,6 +711,7 @@ public class MigrationService {
                     .deployed(consumerCounts.deployed())
                     .unchanged(consumerCounts.unchanged())
                     .failed(consumerCounts.failed())
+                    .skipped(consumerCounts.skipped())
                     .failedSourceIds(consumerCounts.failedSourceIds())
                     .build());
         }
@@ -698,6 +722,7 @@ public class MigrationService {
                     .deployed(certCounts.deployed())
                     .unchanged(certCounts.unchanged())
                     .failed(certCounts.failed())
+                    .skipped(certCounts.skipped())
                     .failedSourceIds(certCounts.failedSourceIds())
                     .build());
         }
@@ -708,6 +733,7 @@ public class MigrationService {
                     .deployed(productCounts.deployed())
                     .unchanged(productCounts.unchanged())
                     .failed(productCounts.failed())
+                    .skipped(productCounts.skipped())
                     .failedSourceIds(productCounts.failedSourceIds())
                     .build());
         }
@@ -718,7 +744,19 @@ public class MigrationService {
                     .deployed(mediationCounts.deployed())
                     .unchanged(mediationCounts.unchanged())
                     .failed(mediationCounts.failed())
+                    .skipped(mediationCounts.skipped())
                     .failedSourceIds(mediationCounts.failedSourceIds())
+                    .build());
+        }
+        if (job.getResourceTypes().contains("scopes") || scopeCounts.skipped() > 0) {
+            outcomes.add(MigrationReport.ResourceOutcome.builder()
+                    .resourceType("scopes")
+                    .translated(scopeCounts.translated())
+                    .deployed(scopeCounts.deployed())
+                    .unchanged(scopeCounts.unchanged())
+                    .failed(scopeCounts.failed())
+                    .skipped(scopeCounts.skipped())
+                    .failedSourceIds(scopeCounts.failedSourceIds())
                     .build());
         }
         MigrationReport report = MigrationReport.builder()
@@ -730,9 +768,47 @@ public class MigrationService {
                 .outcomes(outcomes)
                 .warnings(warnings)
                 .diff(diff)
+                .apiKongDetails(buildApiKongDetails(apis))
                 .generatedAt(Instant.now())
                 .build();
         reportRepository.save(report);
+    }
+
+    /**
+     * Captures the translated Kong objects (service name, route paths, plugin names) for each API so
+     * the cutover service can show Kong detail without re-reading Konnect.
+     */
+    private List<MigrationReport.ApiKongDetail> buildApiKongDetails(List<TranslatedApi> apis) {
+        List<MigrationReport.ApiKongDetail> details = new ArrayList<>();
+        for (TranslatedApi t : apis) {
+            List<String> routePaths = t.getRoutes() == null ? new ArrayList<>() : t.getRoutes().stream()
+                    .filter(r -> r.getPaths() != null)
+                    .flatMap(r -> r.getPaths().stream())
+                    .filter(StringUtils::hasText)
+                    .distinct()
+                    .collect(java.util.stream.Collectors.toList());
+            List<String> plugins = new ArrayList<>();
+            if (t.getServicePlugins() != null) {
+                t.getServicePlugins().stream()
+                        .filter(p -> StringUtils.hasText(p.getName()))
+                        .forEach(p -> plugins.add(p.getName()));
+            }
+            if (t.getRoutePlugins() != null) {
+                t.getRoutePlugins().values().stream()
+                        .filter(java.util.Objects::nonNull)
+                        .flatMap(List::stream)
+                        .filter(p -> StringUtils.hasText(p.getName()))
+                        .forEach(p -> plugins.add(p.getName()));
+            }
+            details.add(MigrationReport.ApiKongDetail.builder()
+                    .wso2SourceId(t.getWso2SourceId())
+                    .wso2SourceName(t.getWso2SourceName())
+                    .kongServiceName(t.getService() != null ? t.getService().getName() : null)
+                    .routePaths(routePaths)
+                    .plugins(plugins.stream().distinct().collect(java.util.stream.Collectors.toList()))
+                    .build());
+        }
+        return details;
     }
 
     private static MigrationReport.Warning warn(String type, DiscoverySnapshot s, String code, String msg) {
@@ -742,6 +818,24 @@ public class MigrationService {
                 .wso2SourceName(s.getSourceName())
                 .code(code).message(msg)
                 .build();
+    }
+
+    private static MigrationReport.Warning scopeManualWarning(DiscoverySnapshot s) {
+        String name = StringUtils.hasText(s.getSourceName()) ? s.getSourceName() : mapField(s.getPayload(), "name");
+        String displayName = mapField(s.getPayload(), "displayName");
+        List<String> bindings = stringListField(s.getPayload(), "bindings");
+        StringBuilder msg = new StringBuilder();
+        msg.append("Scope '").append(StringUtils.hasText(name) ? name : s.getSourceId()).append("'");
+        if (StringUtils.hasText(displayName)) {
+            msg.append(" (").append(displayName).append(")");
+        }
+        if (!bindings.isEmpty()) {
+            msg.append(" has WSO2 role bindings ").append(bindings).append(".");
+        } else {
+            msg.append(" has no discovered WSO2 role bindings.");
+        }
+        msg.append(" ").append(SCOPE_MANUAL_ACTION_MESSAGE);
+        return warn("scopes", s, "SCOPE_MANUAL_ACTION_REQUIRED", msg.toString());
     }
 
     /** Infer the Synapse flow a sequence runs in from its name (in / out / fault). */
@@ -784,5 +878,20 @@ public class MigrationService {
         if (root == null) return null;
         Object v = root.get(key);
         return v == null ? null : v.toString();
+    }
+
+    private static List<String> stringListField(Map<String, Object> root, String key) {
+        if (root == null) return List.of();
+        Object v = root.get(key);
+        if (v instanceof Collection<?> c) {
+            List<String> out = new ArrayList<>(c.size());
+            for (Object item : c) {
+                if (item != null && StringUtils.hasText(item.toString())) {
+                    out.add(item.toString());
+                }
+            }
+            return out;
+        }
+        return List.of();
     }
 }

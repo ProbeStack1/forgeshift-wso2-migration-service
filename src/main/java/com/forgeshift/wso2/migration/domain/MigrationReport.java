@@ -41,6 +41,9 @@ public class MigrationReport {
     /** Summary of the dry-run diff when dryRun==true. */
     private DiffSummary diff;
 
+    /** Per-API translated Kong detail (service name, route paths, plugin names) for downstream views. */
+    private List<ApiKongDetail> apiKongDetails;
+
     private Instant generatedAt;
 
     @Data
@@ -80,5 +83,18 @@ public class MigrationReport {
         private int wouldFail;
         private List<String> sampleCreate;
         private List<String> sampleUpdate;
+    }
+
+    /** Translated Kong objects for one WSO2 API, persisted so downstream views can show Kong detail. */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class ApiKongDetail {
+        private String wso2SourceId;
+        private String wso2SourceName;
+        private String kongServiceName;
+        private List<String> routePaths;
+        private List<String> plugins;
     }
 }
