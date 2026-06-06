@@ -35,16 +35,21 @@ public class KongKonnectProfileReader {
         if (StringUtils.hasText(companyName)) {
             String desiredName = StringUtils.hasText(profileName) ? profileName : "primary";
             Query q = Query.query(Criteria.where("companyName").is(companyName)
-                    .and("profileName").is(desiredName)
-                    .and("status").is("ACTIVE"));
-            Document doc = mongoTemplate.findOne(q, Document.class,
-                    props.getKongKonnectProfilesCollection());
+                    .and("profileName").is(desiredName));
+            Document doc = mongoTemplate.find(q, Document.class,
+                            props.getKongKonnectProfilesCollection())
+                    .stream()
+                    .filter(KongKonnectProfileReader::isActive)
+                    .findFirst()
+                    .orElse(null);
             if (doc == null && "primary".equalsIgnoreCase(desiredName)) {
-                Query fallback = Query.query(Criteria.where("companyName").is(companyName)
-                                .and("status").is("ACTIVE"))
+                Query fallback = Query.query(Criteria.where("companyName").is(companyName))
                         .with(Sort.by(Sort.Direction.DESC, "lastUpdatedAt", "updatedAt", "createdAt"));
                 List<Document> activeProfiles = mongoTemplate.find(fallback, Document.class,
-                        props.getKongKonnectProfilesCollection());
+                                props.getKongKonnectProfilesCollection())
+                        .stream()
+                        .filter(KongKonnectProfileReader::isActive)
+                        .toList();
                 if (activeProfiles.size() == 1) {
                     doc = activeProfiles.get(0);
                     log.info("No Kong Konnect profile named 'primary' for company={}; using sole ACTIVE profile '{}'",
@@ -56,8 +61,8 @@ public class KongKonnectProfileReader {
                 Document selectedControlPlane = selectedControlPlane(doc, requestedControlPlaneId);
                 KongKonnectCredentials creds = KongKonnectCredentials.builder()
                         .source("profile")
-                        .konnectBaseUrl(doc.getString("adminUrl"))
-                        .konnectAccessToken(doc.getString("konnectPat"))
+                        .konnectBaseUrl(firstString(doc, "adminUrl", "konnectBaseUrl"))
+                        .konnectAccessToken(firstString(doc, "konnectPat", "konnectAccessToken"))
                         .controlPlaneId(controlPlaneId(doc, selectedControlPlane))
                         .controlPlaneName(controlPlaneName(doc, selectedControlPlane))
                         .region(StringUtils.hasText(requestedRegion) ? requestedRegion : doc.getString("region"))
@@ -88,9 +93,12 @@ public class KongKonnectProfileReader {
             return;
         }
         Query q = Query.query(Criteria.where("companyName").is(companyName)
-                .and("profileName").is(profileName)
-                .and("status").is("ACTIVE"));
-        Document doc = mongoTemplate.findOne(q, Document.class, props.getGitProfilesCollection());
+                .and("profileName").is(profileName));
+        Document doc = mongoTemplate.find(q, Document.class, props.getGitProfilesCollection())
+                .stream()
+                .filter(KongKonnectProfileReader::isActive)
+                .findFirst()
+                .orElse(null);
         if (doc == null) {
             return;
         }
@@ -151,5 +159,10 @@ public class KongKonnectProfileReader {
             if (v != null && !v.isBlank()) return v;
         }
         return null;
+    }
+
+    private static boolean isActive(Document doc) {
+        Object status = doc.get("status");
+        return status == null || "ACTIVE".equalsIgnoreCase(status.toString());
     }
 }
