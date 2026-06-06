@@ -21,4 +21,8 @@ public class KongKonnectCredentials {
     private String gitRepo;
     private String gitBranch;
     private String gitToken;
+    private String gitOrganization;
+    private String gitUsername;
+    private String gitTeamName;
+    private String gitGithubUrl;
 }

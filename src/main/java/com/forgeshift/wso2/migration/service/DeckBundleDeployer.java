@@ -18,7 +18,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
-import java.util.HashSet;
+import java.nio.file.Path;
 import java.util.List;
 
 /**
@@ -62,8 +62,8 @@ public class DeckBundleDeployer {
         BundleResult bundle = bundleBuilder.build(job.getId(), env, cpName, addr, kongFiles);
 
         if (props.getDeck().getGit().isEnabled()) {
-            GitPushResult push = gitPublisher.push(creds, bundle.getRepoFileContents(),
-                    new HashSet<>(bundle.getCreateOnlyPaths()), commitMessage(job));
+            GitPushResult push = gitPublisher.pushBundle(creds, job.getCompanyName(),
+                    Path.of(bundle.getBundlePath()), commitMessage(job));
             bundle.setGitRepo(push.getRepo());
             bundle.setGitBranch(push.getBranch());
             bundle.setGitCommitSha(push.getCommitSha());

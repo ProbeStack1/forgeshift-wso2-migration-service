@@ -152,7 +152,7 @@ public class MigrationService {
             job.setState(MigrationState.LOADING);
             jobRepository.save(job);
             KongKonnectCredentials creds = profileReader.resolve(req.getCompanyName(),
-                    req.getKongProfileName());
+                    req.getKongProfileName(), req.getKongCtrlPlanId(), req.getKongRegion());
             job.setControlPlaneId(creds.getControlPlaneId());
             job.setKonnectBaseUrl(creds.getKonnectBaseUrl());
             jobRepository.save(job);

@@ -80,6 +80,7 @@ forgeshift:
     # Collections READ from profile-config service
     wso2-profiles-collection: wso2_profiles
     kong-konnect-profiles-collection: kong_konnect_profiles
+    git-profiles-collection: git_profiles
 
     # Translation defaults
     translation:

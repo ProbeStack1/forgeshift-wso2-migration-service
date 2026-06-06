@@ -21,6 +21,7 @@ public class MigrationProperties {
 
     private String wso2ProfilesCollection = "wso2_profiles";
     private String kongKonnectProfilesCollection = "kong_konnect_profiles";
+    private String gitProfilesCollection = "git_profiles";
 
     private Translation translation = new Translation();
     private Konnect konnect = new Konnect();

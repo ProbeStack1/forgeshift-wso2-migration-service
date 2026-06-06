@@ -29,7 +29,8 @@ public class KongKonnectProfileReader {
     private final MongoTemplate mongoTemplate;
     private final MigrationProperties props;
 
-    public KongKonnectCredentials resolve(String companyName, String profileName) {
+    public KongKonnectCredentials resolve(String companyName, String profileName,
+                                          String requestedControlPlaneId, String requestedRegion) {
         if (StringUtils.hasText(companyName)) {
             String desiredName = StringUtils.hasText(profileName) ? profileName : "primary";
             Query q = Query.query(Criteria.where("companyName").is(companyName)
@@ -39,48 +40,91 @@ public class KongKonnectProfileReader {
                     props.getKongKonnectProfilesCollection());
             if (doc != null) {
                 log.debug("Using Kong Konnect profile (company={}, profileName={})", companyName, desiredName);
-                return KongKonnectCredentials.builder()
+                Document selectedControlPlane = selectedControlPlane(doc, requestedControlPlaneId);
+                KongKonnectCredentials creds = KongKonnectCredentials.builder()
                         .source("profile")
                         .konnectBaseUrl(doc.getString("adminUrl"))
                         .konnectAccessToken(doc.getString("konnectPat"))
-                        .controlPlaneId(firstControlPlaneId(doc))
-                        .controlPlaneName(firstControlPlaneName(doc))
-                        .region(doc.getString("region"))
+                        .controlPlaneId(controlPlaneId(doc, selectedControlPlane))
+                        .controlPlaneName(controlPlaneName(doc, selectedControlPlane))
+                        .region(StringUtils.hasText(requestedRegion) ? requestedRegion : doc.getString("region"))
                         .gitRepo(firstString(doc, "gitRepo", "configRepo", "kongConfigRepo"))
                         .gitBranch(firstString(doc, "gitBranch", "configBranch"))
                         .gitToken(firstString(doc, "gitToken", "githubToken"))
                         .build();
+                applyGitProfile(creds, companyName, desiredName);
+                return creds;
             }
         }
         log.debug("No Kong Konnect profile found - using static fallback");
-        return KongKonnectCredentials.builder()
+        KongKonnectCredentials creds = KongKonnectCredentials.builder()
                 .source("static")
                 .konnectBaseUrl(props.getKonnect().getBaseUrlFallback())
                 .konnectAccessToken(props.getKonnect().getAccessTokenFallback())
-                .controlPlaneId(props.getKonnect().getControlPlaneIdFallback())
+                .controlPlaneId(StringUtils.hasText(requestedControlPlaneId)
+                        ? requestedControlPlaneId : props.getKonnect().getControlPlaneIdFallback())
                 .controlPlaneName(props.getDeck().getControlPlaneNameFallback())
-                .region("us")
+                .region(StringUtils.hasText(requestedRegion) ? requestedRegion : "us")
                 .build();
+        applyGitProfile(creds, companyName, StringUtils.hasText(profileName) ? profileName : "primary");
+        return creds;
+    }
+
+    private void applyGitProfile(KongKonnectCredentials creds, String companyName, String profileName) {
+        if (!StringUtils.hasText(companyName)) {
+            return;
+        }
+        Query q = Query.query(Criteria.where("companyName").is(companyName)
+                .and("profileName").is(profileName)
+                .and("status").is("ACTIVE"));
+        Document doc = mongoTemplate.findOne(q, Document.class, props.getGitProfilesCollection());
+        if (doc == null) {
+            return;
+        }
+        log.debug("Using Git profile (company={}, profileName={})", companyName, profileName);
+        creds.setGitRepo(firstString(doc, "repo", "gitRepo", "configRepo", "kongConfigRepo"));
+        creds.setGitBranch(firstString(doc, "branch", "gitBranch", "configBranch"));
+        creds.setGitToken(firstString(doc, "pat", "gitToken", "githubToken"));
+        creds.setGitOrganization(firstString(doc, "organization"));
+        creds.setGitUsername(firstString(doc, "username"));
+        creds.setGitTeamName(firstString(doc, "teamName"));
+        creds.setGitGithubUrl(firstString(doc, "githubUrl"));
     }
 
     @SuppressWarnings("unchecked")
-    private static String firstControlPlaneId(Document doc) {
+    private static Document selectedControlPlane(Document doc, String requestedControlPlaneId) {
         Object value = doc.get("controlPlanes");
         if (!(value instanceof List<?> controlPlanes) || controlPlanes.isEmpty()) {
             return null;
         }
-        Object first = controlPlanes.get(0);
-        if (!(first instanceof Document controlPlane)) {
-            return null;
+
+        if (StringUtils.hasText(requestedControlPlaneId)) {
+            return controlPlanes.stream()
+                    .filter(Document.class::isInstance)
+                    .map(Document.class::cast)
+                    .filter(cp -> requestedControlPlaneId.equals(cp.getString("controlPlaneId")))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "Control Plane not found in Kong Konnect profile: " + requestedControlPlaneId));
         }
-        return controlPlane.getString("controlPlaneId");
+
+        if (controlPlanes.size() == 1 && controlPlanes.get(0) instanceof Document controlPlane) {
+            return controlPlane;
+        }
+
+        throw new IllegalArgumentException(
+                "Multiple Kong control planes found. Pass kongCtrlPlanId to select the target control plane.");
     }
 
-    @SuppressWarnings("unchecked")
-    private static String firstControlPlaneName(Document doc) {
-        Object value = doc.get("controlPlanes");
-        if (value instanceof List<?> controlPlanes && !controlPlanes.isEmpty()
-                && controlPlanes.get(0) instanceof Document controlPlane) {
+    private static String controlPlaneId(Document doc, Document controlPlane) {
+        if (controlPlane != null) {
+            return controlPlane.getString("controlPlaneId");
+        }
+        return doc.getString("controlPlaneId");
+    }
+
+    private static String controlPlaneName(Document doc, Document controlPlane) {
+        if (controlPlane != null) {
             String name = controlPlane.getString("controlPlaneName");
             if (name == null) name = controlPlane.getString("name");
             if (name != null) return name;
