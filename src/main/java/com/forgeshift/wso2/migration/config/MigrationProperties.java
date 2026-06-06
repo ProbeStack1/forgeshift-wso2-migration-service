@@ -140,6 +140,8 @@ public class MigrationProperties {
             private String branch = "main";
             /** PAT fallback when the profile doesn't carry one. */
             private String token = "";
+            /** Collection that holds per-company git provider profiles (org + PAT). */
+            private String profilesCollection = "git_profiles";
             private String authorName = "forgeshift-wso2-migrator";
             private String authorEmail = "migrator@forgeshift.local";
             private String commitMessageTemplate = "[wso2-migration] job {jobId} ({company}/{tenant})";

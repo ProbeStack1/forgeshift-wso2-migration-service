@@ -161,6 +161,7 @@ forgeshift:
         repo: ${DECK_GIT_REPO:}
         branch: ${DECK_GIT_BRANCH:main}
         token: ${DECK_GIT_TOKEN:}
+        profiles-collection: ${DECK_GIT_PROFILES_COLLECTION:git_profiles}
         author-name: ${DECK_GIT_AUTHOR_NAME:forgeshift-wso2-migrator}
         author-email: ${DECK_GIT_AUTHOR_EMAIL:migrator@forgeshift.local}
         commit-message-template: ${DECK_GIT_COMMIT_MSG:[wso2-migration] job {jobId} ({company}/{tenant})}
