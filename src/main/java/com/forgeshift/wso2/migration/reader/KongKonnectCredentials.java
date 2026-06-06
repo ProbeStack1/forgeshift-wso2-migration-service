@@ -15,5 +15,10 @@ public class KongKonnectCredentials {
     private String konnectBaseUrl;
     private String konnectAccessToken;
     private String controlPlaneId;
+    private String controlPlaneName;
     private String region;
+    /** Kong-config git repo for auto-commit (owner/repo); resolved from the profile when present. */
+    private String gitRepo;
+    private String gitBranch;
+    private String gitToken;
 }

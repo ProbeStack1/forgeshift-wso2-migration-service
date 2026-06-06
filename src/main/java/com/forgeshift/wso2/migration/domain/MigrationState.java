@@ -8,6 +8,7 @@ public enum MigrationState {
     TRANSLATING,          // producing Kong entity plan in memory
     DIFFING,              // computing diff vs Konnect current state (dry-run target)
     DEPLOYING,            // writing entities to Konnect
+    GENERATING_BUNDLE,    // building the decK kong.yaml bundle (deck delivery mode)
     COMPLETED,            // all entities applied
     FAILED,               // terminal error; see lastError
     CANCELLED,            // operator cancelled mid-flight

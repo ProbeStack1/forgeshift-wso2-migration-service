@@ -15,6 +15,8 @@ import com.forgeshift.wso2.migration.reader.Wso2ProfileReader;
 import com.forgeshift.wso2.migration.repository.MigrationJobRepository;
 import com.forgeshift.wso2.migration.repository.MigrationReportRepository;
 import com.forgeshift.wso2.migration.client.Wso2BundleClient;
+import com.forgeshift.wso2.migration.config.MigrationProperties;
+import com.forgeshift.wso2.migration.deck.BundleResult;
 import com.forgeshift.wso2.migration.translator.ApiProductTranslator;
 import com.forgeshift.wso2.migration.translator.ApiTranslator;
 import com.forgeshift.wso2.migration.translator.CertificateTranslator;
@@ -72,6 +74,8 @@ public class MigrationService {
     private final AssessmentSourceReader assessmentSourceReader;
     private final Wso2BundleClient wso2BundleClient;
     private final KongDeployer deployer;
+    private final DeckBundleDeployer deckBundleDeployer;
+    private final MigrationProperties props;
     @Qualifier("migrationExecutor")
     private final TaskExecutor migrationExecutor;
 
@@ -408,10 +412,44 @@ public class MigrationService {
                         new ResourceCounters(translatedCertificates.size(), 0, 0, 0, 0, List.of()),
                         new ResourceCounters(translatedApiProducts.size(), 0, 0, 0, 0, List.of()),
                         new ResourceCounters(translatedMediations.size(), 0, 0, 0, 0, List.of()),
-                        new ResourceCounters(0, 0, 0, 0, scopeSnapshots.size(), List.of()));
+                        new ResourceCounters(0, 0, 0, 0, scopeSnapshots.size(), List.of()), null);
                 job.setState(MigrationState.DRY_RUN_DONE);
                 job.setCompletedAt(Instant.now());
                 jobRepository.save(job);
+                return;
+            }
+
+            // ----- DECK BUNDLE DELIVERY -----
+            // When deck delivery is enabled we don't write to Konnect over REST.
+            // We serialize the translated plan to kong.yaml, package a downloadable
+            // bundle (yaml + pipeline workflow + README), and let the GitHub Actions
+            // pipeline apply it with `deck gateway apply`. entity_mappings are rebuilt
+            // afterwards from the decK dump via POST /migrations/{id}/deck-result.
+            if (props.getDeck().isEnabled()) {
+                job.setState(MigrationState.GENERATING_BUNDLE);
+                jobRepository.save(job);
+                BundleResult bundle = deckBundleDeployer.buildBundle(job, creds,
+                        translatedApis, translatedConsumers, translatedCertificates,
+                        translatedApiProducts, translatedMediations);
+                recordProgress(job, "bundle", "COMPLETED",
+                        job.getCounts().getTotalTranslated(),
+                        job.getCounts().getTotalTranslated(), null);
+                // Counts reflect what was written INTO the bundle; the real apply
+                // result lives in the GitHub Actions run (two-stage — see deck-result).
+                writeReport(job, translatedApis, translatedConsumers, warnings, null,
+                        new ResourceCounters(translatedApis.size(), translatedApis.size(), 0, 0, 0, List.of()),
+                        new ResourceCounters(translatedConsumers.size(), translatedConsumers.size(), 0, 0, 0, List.of()),
+                        new ResourceCounters(translatedCertificates.size(), translatedCertificates.size(), 0, 0, 0, List.of()),
+                        new ResourceCounters(translatedApiProducts.size(), translatedApiProducts.size(), 0, 0, 0, List.of()),
+                        new ResourceCounters(translatedMediations.size(), translatedMediations.size(), 0, 0, 0, List.of()),
+                        new ResourceCounters(0, 0, 0, 0, scopeSnapshots.size(), List.of()),
+                        bundle);
+                job.getCounts().setTotalDeployed(job.getCounts().getTotalTranslated());
+                job.setState(MigrationState.COMPLETED);
+                job.setCompletedAt(Instant.now());
+                jobRepository.save(job);
+                log.info("Migration job {} COMPLETED (decK bundle): {} -> {}",
+                        job.getId(), bundle.getKongConfigPath(), bundle.getDownloadUrl());
                 return;
             }
 
@@ -561,7 +599,7 @@ public class MigrationService {
             ResourceCounters scopeCounts = new ResourceCounters(
                     0, 0, 0, 0, scopeSnapshots.size(), List.of());
             writeReport(job, translatedApis, translatedConsumers, warnings, null,
-                    apiCounts, consCounts, certCounts, productCounts, mediationCounts, scopeCounts);
+                    apiCounts, consCounts, certCounts, productCounts, mediationCounts, scopeCounts, null);
 
             job.setState(MigrationState.COMPLETED);
             job.setCompletedAt(Instant.now());
@@ -691,7 +729,8 @@ public class MigrationService {
                              ResourceCounters certCounts,
                              ResourceCounters productCounts,
                              ResourceCounters mediationCounts,
-                             ResourceCounters scopeCounts) {
+                             ResourceCounters scopeCounts,
+                             BundleResult bundle) {
         List<MigrationReport.ResourceOutcome> outcomes = new ArrayList<>();
         if (job.getResourceTypes().contains("apis") || apiCounts.translated() > 0) {
             outcomes.add(MigrationReport.ResourceOutcome.builder()
@@ -769,6 +808,15 @@ public class MigrationService {
                 .warnings(warnings)
                 .diff(diff)
                 .apiKongDetails(buildApiKongDetails(apis))
+                .bundleDownloadUrl(bundle != null ? bundle.getDownloadUrl() : null)
+                .bundlePath(bundle != null ? bundle.getBundlePath() : null)
+                .controlPlaneName(bundle != null ? bundle.getControlPlaneName() : null)
+                .kongConfigPath(bundle != null ? bundle.getKongConfigPath() : null)
+                .deckMode(bundle != null ? props.getDeck().getDeckMode() : null)
+                .gitRepo(bundle != null ? bundle.getGitRepo() : null)
+                .gitBranch(bundle != null ? bundle.getGitBranch() : null)
+                .gitCommitSha(bundle != null ? bundle.getGitCommitSha() : null)
+                .gitCommitUrl(bundle != null ? bundle.getGitCommitUrl() : null)
                 .generatedAt(Instant.now())
                 .build();
         reportRepository.save(report);

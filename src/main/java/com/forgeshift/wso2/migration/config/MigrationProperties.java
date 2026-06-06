@@ -27,6 +27,7 @@ public class MigrationProperties {
     private Tenant tenant = new Tenant();
     private Wso2 wso2 = new Wso2();
     private BundleDownload bundleDownload = new BundleDownload();
+    private Deck deck = new Deck();
 
     @Data
     public static class Translation {
@@ -104,5 +105,43 @@ public class MigrationProperties {
     public static class BundleDownload {
         private String tempDir = System.getProperty("java.io.tmpdir") + "/wso2-migration-bundles";
         private boolean cleanupAfterMigration = true;
+    }
+
+    /** decK bundle delivery (replaces direct Konnect REST writes when {@code enabled}). */
+    @Data
+    public static class Deck {
+        private boolean enabled = true;
+        private String formatVersion = "3.0";
+        private boolean transform = true;
+        private String envName = "dev";
+        private String pipelineTemplateRef = "ForgeCrux/pipeline-template/.github/workflows/kong.yaml@main";
+        private String deckMode = "apply";
+        private String konnectAddr = "https://us.api.konghq.com";
+        private String kongConfigPathTemplate = "kong/{env}/kong.yaml";
+        /** Directory the per-API files live in (decK merges every file in it). */
+        private String kongConfigDirTemplate = "kong/{env}";
+        private String konnectSecretName = "KONNECT_TOKEN";
+        private String controlPlaneNameFallback = "";
+        private String bundleDir = System.getProperty("java.io.tmpdir") + "/kong-bundles";
+        private String downloadBaseUrl = "";
+        /** Public base URL of THIS service so the pipeline can POST results back to /migrations/{id}/deck-result. */
+        private String callbackBaseUrl = "";
+        private String storage = "temp";
+        private Git git = new Git();
+
+        /** Auto-commit of the generated decK files to the Kong-config git repo (GitHub Contents API). */
+        @Data
+        public static class Git {
+            private boolean enabled = false;
+            private String apiBaseUrl = "https://api.github.com";
+            /** owner/repo fallback when the Konnect profile doesn't carry one. */
+            private String repo = "";
+            private String branch = "main";
+            /** PAT fallback when the profile doesn't carry one. */
+            private String token = "";
+            private String authorName = "forgeshift-wso2-migrator";
+            private String authorEmail = "migrator@forgeshift.local";
+            private String commitMessageTemplate = "[wso2-migration] job {jobId} ({company}/{tenant})";
+        }
     }
 }

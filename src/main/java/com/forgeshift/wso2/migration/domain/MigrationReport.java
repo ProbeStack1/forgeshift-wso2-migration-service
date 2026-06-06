@@ -44,6 +44,19 @@ public class MigrationReport {
     /** Per-API translated Kong detail (service name, route paths, plugin names) for downstream views. */
     private List<ApiKongDetail> apiKongDetails;
 
+    /** decK bundle outputs (populated when deck delivery is enabled). */
+    private String bundleDownloadUrl;
+    private String bundlePath;
+    private String controlPlaneName;
+    private String kongConfigPath;
+    private String deckMode;
+
+    /** Auto-commit outcome (populated when deck.git.enabled and a repo/token is available). */
+    private String gitRepo;
+    private String gitBranch;
+    private String gitCommitSha;
+    private String gitCommitUrl;
+
     private Instant generatedAt;
 
     @Data

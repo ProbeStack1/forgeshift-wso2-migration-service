@@ -130,3 +130,36 @@ forgeshift:
     bundle-download:
       temp-dir: ${BUNDLE_TEMP_DIR:${java.io.tmpdir}/wso2-migration-bundles}
       cleanup-after-migration: ${BUNDLE_CLEANUP:true}
+
+    # decK bundle delivery — when enabled, migrations produce a kong.yaml bundle
+    # (committed to git → pipeline runs `deck gateway apply`) instead of calling
+    # the Konnect REST API directly.
+    deck:
+      enabled: ${DECK_ENABLED:true}
+      format-version: "3.0"
+      transform: true
+      env-name: ${DECK_ENV:dev}
+      pipeline-template-ref: ${DECK_PIPELINE_TEMPLATE_REF:ForgeCrux/pipeline-template/.github/workflows/kong.yaml@main}
+      deck-mode: ${DECK_MODE:apply}
+      konnect-addr: ${DECK_KONNECT_ADDR:https://us.api.konghq.com}
+      kong-config-path-template: ${DECK_KONG_CONFIG_PATH:kong/{env}/kong.yaml}
+      kong-config-dir-template: ${DECK_KONG_CONFIG_DIR:kong/{env}}
+      konnect-secret-name: ${DECK_KONNECT_SECRET_NAME:KONNECT_TOKEN}
+      control-plane-name-fallback: ${DECK_CONTROL_PLANE_NAME:}
+      bundle-dir: ${DECK_BUNDLE_DIR:${java.io.tmpdir}/kong-bundles}
+      download-base-url: ${DECK_DOWNLOAD_BASE_URL:}
+      # Public base URL of this service; when set, the generated workflow POSTs the apply
+      # report + dump back to {callback-base-url}/migrations/{id}/deck-result automatically.
+      callback-base-url: ${DECK_CALLBACK_BASE_URL:}
+      storage: ${DECK_STORAGE:temp}
+      # Auto-commit the generated files to the Kong-config repo (else just produce the bundle).
+      # repo/branch/token come from the kong_konnect_profiles row when present, else from here.
+      git:
+        enabled: ${DECK_GIT_ENABLED:false}
+        api-base-url: ${DECK_GIT_API_BASE_URL:https://api.github.com}
+        repo: ${DECK_GIT_REPO:}
+        branch: ${DECK_GIT_BRANCH:main}
+        token: ${DECK_GIT_TOKEN:}
+        author-name: ${DECK_GIT_AUTHOR_NAME:forgeshift-wso2-migrator}
+        author-email: ${DECK_GIT_AUTHOR_EMAIL:migrator@forgeshift.local}
+        commit-message-template: ${DECK_GIT_COMMIT_MSG:[wso2-migration] job {jobId} ({company}/{tenant})}

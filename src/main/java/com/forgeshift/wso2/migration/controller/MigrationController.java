@@ -6,6 +6,8 @@ import com.forgeshift.wso2.migration.domain.MigrationReport;
 import com.forgeshift.wso2.migration.domain.MigrationState;
 import com.forgeshift.wso2.migration.dto.MigrationJobResponse;
 import com.forgeshift.wso2.migration.dto.MigrationResultResponse;
+import com.forgeshift.wso2.migration.deck.DeckResultMapper;
+import com.forgeshift.wso2.migration.dto.DeckResultRequest;
 import com.forgeshift.wso2.migration.dto.StartMigrationRequest;
 import com.forgeshift.wso2.migration.dto.Wso2BaseMigrationRequest;
 import com.forgeshift.wso2.migration.dto.Wso2MigrateApisRequest;
@@ -21,11 +23,16 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 
+import java.io.IOException;
 import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
@@ -67,6 +74,7 @@ public class MigrationController {
     private final MigrationJobRepository jobRepository;
     private final MigrationReportRepository reportRepository;
     private final MigrationProperties props;
+    private final DeckResultMapper deckResultMapper;
 
     @PostMapping("/migrations")
     public ResponseEntity<?> start(@Valid @RequestBody StartMigrationRequest req,
@@ -251,6 +259,51 @@ public class MigrationController {
         return reportRepository.findByMigrationJobId(id)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Download the generated decK bundle (kong.yaml + pipeline workflow + README, zipped)
+     * for a migration. The same URL is returned in the migration report as bundleDownloadUrl.
+     */
+    @GetMapping("/migrations/{id}/bundle")
+    public ResponseEntity<?> downloadBundle(@PathVariable String id) {
+        MigrationReport report = reportRepository.findByMigrationJobId(id).orElse(null);
+        if (report == null || !StringUtils.hasText(report.getBundlePath())) {
+            return ResponseEntity.notFound().build();
+        }
+        Path path = Path.of(report.getBundlePath());
+        if (!Files.exists(path)) {
+            return ResponseEntity.notFound().build();
+        }
+        try {
+            byte[] zip = Files.readAllBytes(path);
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION,
+                            "attachment; filename=\"kong-bundle-" + id + ".zip\"")
+                    .contentType(MediaType.parseMediaType("application/zip"))
+                    .body(zip);
+        } catch (IOException e) {
+            log.error("Failed to read bundle for migration {}: {}", id, e.getMessage());
+            return ResponseEntity.internalServerError().body("Failed to read bundle: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Ingest the decK apply result (Option B): the pipeline POSTs the two JSON outputs —
+     * {@code deck gateway dump --format json} (kongState) and
+     * {@code deck gateway apply --json-output} (applyReport) — and the service rebuilds
+     * entity_mappings (with Kong ids + parents) and records failures.
+     */
+    @PostMapping("/migrations/{id}/deck-result")
+    public ResponseEntity<?> ingestDeckResult(@PathVariable String id,
+                                              @RequestBody DeckResultRequest body) {
+        MigrationJob job = jobRepository.findById(id).orElse(null);
+        if (job == null) {
+            return ResponseEntity.notFound().build();
+        }
+        DeckResultMapper.Summary summary =
+                deckResultMapper.ingest(job, body.getKongState(), body.getApplyReport());
+        return ResponseEntity.ok(summary);
     }
 
     @GetMapping("/migrations")

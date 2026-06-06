@@ -44,7 +44,11 @@ public class KongKonnectProfileReader {
                         .konnectBaseUrl(doc.getString("adminUrl"))
                         .konnectAccessToken(doc.getString("konnectPat"))
                         .controlPlaneId(firstControlPlaneId(doc))
+                        .controlPlaneName(firstControlPlaneName(doc))
                         .region(doc.getString("region"))
+                        .gitRepo(firstString(doc, "gitRepo", "configRepo", "kongConfigRepo"))
+                        .gitBranch(firstString(doc, "gitBranch", "configBranch"))
+                        .gitToken(firstString(doc, "gitToken", "githubToken"))
                         .build();
             }
         }
@@ -54,6 +58,7 @@ public class KongKonnectProfileReader {
                 .konnectBaseUrl(props.getKonnect().getBaseUrlFallback())
                 .konnectAccessToken(props.getKonnect().getAccessTokenFallback())
                 .controlPlaneId(props.getKonnect().getControlPlaneIdFallback())
+                .controlPlaneName(props.getDeck().getControlPlaneNameFallback())
                 .region("us")
                 .build();
     }
@@ -69,5 +74,25 @@ public class KongKonnectProfileReader {
             return null;
         }
         return controlPlane.getString("controlPlaneId");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String firstControlPlaneName(Document doc) {
+        Object value = doc.get("controlPlanes");
+        if (value instanceof List<?> controlPlanes && !controlPlanes.isEmpty()
+                && controlPlanes.get(0) instanceof Document controlPlane) {
+            String name = controlPlane.getString("controlPlaneName");
+            if (name == null) name = controlPlane.getString("name");
+            if (name != null) return name;
+        }
+        return doc.getString("controlPlaneName");
+    }
+
+    private static String firstString(Document doc, String... keys) {
+        for (String k : keys) {
+            String v = doc.getString(k);
+            if (v != null && !v.isBlank()) return v;
+        }
+        return null;
     }
 }

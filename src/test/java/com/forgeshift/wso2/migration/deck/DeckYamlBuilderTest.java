@@ -1,0 +1,119 @@
+package com.forgeshift.wso2.migration.deck;
+
+import com.forgeshift.wso2.migration.config.MigrationProperties;
+import com.forgeshift.wso2.migration.domain.kong.KongPlugin;
+import com.forgeshift.wso2.migration.domain.kong.KongRoute;
+import com.forgeshift.wso2.migration.domain.kong.KongService;
+import com.forgeshift.wso2.migration.domain.kong.KongTarget;
+import com.forgeshift.wso2.migration.domain.kong.KongUpstream;
+import com.forgeshift.wso2.migration.translator.TranslatedApi;
+import com.forgeshift.wso2.migration.translator.TranslatedApiProduct;
+import com.forgeshift.wso2.migration.translator.TranslatedMediationPolicy;
+import org.junit.jupiter.api.Test;
+import org.yaml.snakeyaml.Yaml;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class DeckYamlBuilderTest {
+
+    private final DeckYamlBuilder builder = new DeckYamlBuilder(new MigrationProperties());
+
+    @Test
+    void nestsRoutesPluginsAndUpstreamUnderTheService() {
+        KongService svc = KongService.builder().name("petstore-2-0").protocol("https")
+                .host("api.example.com").port(443).path("/")
+                .tags(List.of("wso2-source-id:abc")).build();
+        KongRoute route = KongRoute.builder().name("petstore-2-0-get")
+                .protocols(List.of("http", "https")).methods(List.of("GET"))
+                .paths(List.of("/petstore/pet")).strip_path(true)
+                .tags(List.of("wso2-source-id:abc")).build();
+        KongPlugin rlimit = KongPlugin.builder().name("rate-limiting")
+                .config(Map.of("minute", 200)).tags(List.of("wso2-source-id:abc")).build();
+        KongUpstream up = KongUpstream.builder().name("petstore-2-0-upstream").algorithm("round-robin").build();
+        KongTarget tgt = KongTarget.builder().target("api.example.com:443").weight(100).build();
+
+        TranslatedApi api = TranslatedApi.builder()
+                .wso2SourceId("abc").wso2SourceName("petstore").service(svc)
+                .routes(new ArrayList<>(List.of(route)))
+                .servicePlugins(new ArrayList<>(List.of(KongPlugin.builder().name("jwt").build())))
+                .routePlugins(new HashMap<>(Map.of("petstore-2-0-get", List.of(rlimit))))
+                .upstream(up).targets(new ArrayList<>(List.of(tgt)))
+                .build();
+
+        Map<String, Object> root = parse(builder.build(List.of(api), List.of(), List.of(), List.of(), List.of()));
+
+        assertEquals("3.0", root.get("_format_version"));
+        List<?> services = (List<?>) root.get("services");
+        assertEquals(1, services.size());
+        Map<?, ?> s0 = (Map<?, ?>) services.get(0);
+        assertEquals("petstore-2-0", s0.get("name"));
+
+        List<?> routes = (List<?>) s0.get("routes");
+        Map<?, ?> r0 = (Map<?, ?>) routes.get(0);
+        assertFalse(r0.containsKey("service"), "nested route must not carry a service FK");
+        assertEquals("rate-limiting", ((Map<?, ?>) ((List<?>) r0.get("plugins")).get(0)).get("name"));
+        assertEquals("jwt", ((Map<?, ?>) ((List<?>) s0.get("plugins")).get(0)).get("name"));
+
+        Map<?, ?> u0 = (Map<?, ?>) ((List<?>) root.get("upstreams")).get(0);
+        assertEquals("api.example.com:443", ((Map<?, ?>) ((List<?>) u0.get("targets")).get(0)).get("target"));
+    }
+
+    @Test
+    void productRouteAndMediationPluginLinkByServiceName() {
+        KongService svc = KongService.builder().name("orders-1-0").host("h").port(80).protocol("http").build();
+        TranslatedApi api = TranslatedApi.builder().wso2SourceId("api1").service(svc).build();
+
+        KongRoute prodRoute = KongRoute.builder().name("prod-route").paths(List.of("/p")).build();
+        TranslatedApiProduct product = TranslatedApiProduct.builder()
+                .wso2SourceId("prod1")
+                .routes(List.of(TranslatedApiProduct.ProductRoute.builder()
+                        .route(prodRoute).memberApiId("api1").build()))
+                .build();
+
+        KongPlugin serverless = KongPlugin.builder().name("post-function")
+                .config(Map.of("access", List.of("x"))).build();
+        TranslatedMediationPolicy med = TranslatedMediationPolicy.builder()
+                .wso2SourceId("api1:seq:out").targetApiId("api1").plugin(serverless).build();
+
+        Map<String, Object> root = parse(
+                builder.build(List.of(api), List.of(), List.of(), List.of(product), List.of(med)));
+
+        Map<?, ?> r0 = (Map<?, ?>) ((List<?>) root.get("routes")).get(0);
+        assertEquals(Map.of("name", "orders-1-0"), r0.get("service"));
+        Map<?, ?> p0 = (Map<?, ?>) ((List<?>) root.get("plugins")).get(0);
+        assertEquals(Map.of("name", "orders-1-0"), p0.get("service"));
+    }
+
+    @Test
+    void emptyPlanStillHasFormatVersionAndNoEntityKeys() {
+        Map<String, Object> root = parse(builder.build(List.of(), List.of(), List.of(), List.of(), List.of()));
+        assertEquals("3.0", root.get("_format_version"));
+        assertFalse(root.containsKey("services"));
+    }
+
+    @Test
+    void buildFilesEmitsOneFilePerApiInTheConfigDir() {
+        KongService svc = KongService.builder().name("orders-1-0").host("h").port(80).protocol("http")
+                .tags(List.of("wso2-source-id:api1")).build();
+        TranslatedApi api = TranslatedApi.builder().wso2SourceId("api1").service(svc).build();
+
+        Map<String, String> files = builder.buildFiles("dev", List.of(api),
+                List.of(), List.of(), List.of(), List.of());
+
+        assertTrue(files.containsKey("kong/dev/api-orders-1-0.yaml"));
+        Map<String, Object> root = parse(files.get("kong/dev/api-orders-1-0.yaml"));
+        assertEquals("3.0", root.get("_format_version"));
+        assertEquals(1, ((List<?>) root.get("services")).size());
+    }
+
+    private static Map<String, Object> parse(String yaml) {
+        return new Yaml().load(yaml);
+    }
+}
