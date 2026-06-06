@@ -18,8 +18,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
-import java.nio.file.Path;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * decK-bundle replacement for {@link KongDeployer}. Instead of writing entities to Konnect
@@ -62,8 +63,15 @@ public class DeckBundleDeployer {
         BundleResult bundle = bundleBuilder.build(job.getId(), env, cpName, addr, kongFiles);
 
         if (props.getDeck().getGit().isEnabled()) {
-            GitPushResult push = gitPublisher.pushBundle(creds, job.getCompanyName(),
-                    Path.of(bundle.getBundlePath()), commitMessage(job));
+            // Commit the UNZIPPED files (kong/<env>/*.yaml + workflow + README) to the
+            // Kong-config repo so the GitHub Actions pipeline fires on push to its
+            // default branch. (pushBundle() only archives the zip and never triggers a
+            // pipeline.) Workflow + README are create-only, so re-migrating an API
+            // rewrites just that API's file and leaves the rest — and Kong — untouched.
+            Set<String> createOnly = bundle.getCreateOnlyPaths() == null
+                    ? Set.of() : new LinkedHashSet<>(bundle.getCreateOnlyPaths());
+            GitPushResult push = gitPublisher.pushFiles(creds, job.getCompanyName(),
+                    bundle.getRepoFileContents(), createOnly, commitMessage(job));
             bundle.setGitRepo(push.getRepo());
             bundle.setGitBranch(push.getBranch());
             bundle.setGitCommitSha(push.getCommitSha());

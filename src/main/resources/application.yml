@@ -158,7 +158,10 @@ forgeshift:
       # Auto-commit the generated files to the Kong-config repo (else just produce the bundle).
       # repo/branch/token come from the kong_konnect_profiles row when present, else from here.
       git:
-        enabled: ${DECK_GIT_ENABLED:false}
+        # ON by default: a migration commits the kong files + workflow to the Kong-config
+        # repo, which triggers the deck pipeline. Still needs repo + token below (or a
+        # git_profiles row / kong_konnect_profiles git fields); self-skips with a WARN if absent.
+        enabled: ${DECK_GIT_ENABLED:true}
         api-base-url: ${DECK_GIT_API_BASE_URL:https://api.github.com}
         repo: ${DECK_GIT_REPO:}
         branch: ${DECK_GIT_BRANCH:main}

@@ -97,47 +97,82 @@ public class GitPublisher {
         }
     }
 
-    public GitPushResult push(KongKonnectCredentials creds, Map<String, String> files,
-                              Set<String> createOnlyPaths, String message) {
+    /**
+     * Auto-commit the UNZIPPED bundle files (per-API {@code kong/<env>/*.yaml} + the
+     * {@code .github/workflows/deploy-<env>.yml} workflow + README) to the company's
+     * Kong-config repo. Because the committed workflow lands at its real path on the
+     * repo's branch, the push <b>triggers the deck pipeline</b> (unlike {@link #pushBundle}
+     * which only archives the zip).
+     *
+     * <p>Credentials/target are resolved in this order:
+     * <ul>
+     *   <li><b>org + PAT</b> from the {@code git_profiles} row for the company (fallback:
+     *       the Kong Konnect profile's git fields, then {@code deck.git.*} config);</li>
+     *   <li><b>repo</b> — an explicit {@code owner/repo} (Kong Konnect profile {@code gitRepo}
+     *       or {@code deck.git.repo}) is used as-is; otherwise it's derived as
+     *       {@code <organization>/<company>-kong-config} and auto-created on first run.</li>
+     * </ul>
+     * Workflow + README are create-only, so re-migrating one API rewrites just that API's
+     * file and leaves the rest — and Kong — untouched.
+     */
+    public GitPushResult pushFiles(KongKonnectCredentials creds, String companyName,
+                                   Map<String, String> files, Set<String> createOnlyPaths, String message) {
         MigrationProperties.Deck.Git cfg = props.getDeck().getGit();
         if (!cfg.isEnabled()) {
             return skip("auto-commit disabled (forgeshift.migration.deck.git.enabled=false)");
         }
-        String repo = firstNonBlank(creds == null ? null : creds.getGitRepo(), cfg.getRepo());
-        String branch = firstNonBlank(creds == null ? null : creds.getGitBranch(), cfg.getBranch());
-        String token = firstNonBlank(creds == null ? null : creds.getGitToken(), cfg.getToken());
-        if (!StringUtils.hasText(repo) || !StringUtils.hasText(token)) {
-            return skip("no git repo/token configured (profile or deck.git.repo + deck.git.token)");
-        }
-        int slash = repo.indexOf('/');
-        if (slash <= 0 || slash == repo.length() - 1) {
-            return skip("git repo must be in 'owner/repo' form, got: " + repo);
-        }
-        String owner = repo.substring(0, slash);
-        String name = repo.substring(slash + 1);
 
+        // Org + PAT come from git_profiles (by companyName); fall back to the Konnect
+        // profile's git fields, then deck.git config.
+        GitProfileCredentials git = gitProfileReader.resolve(companyName);
+        String token = firstNonBlank(git.getPat(),
+                firstNonBlank(creds == null ? null : creds.getGitToken(), cfg.getToken()));
+        String branch = firstNonBlank(creds == null ? null : creds.getGitBranch(), cfg.getBranch());
+
+        // Explicit owner/repo (Konnect profile gitRepo or deck.git.repo) wins; else derive
+        // <organization>/<company>-kong-config from the git_profiles org and auto-create it.
+        String explicitRepo = firstNonBlank(creds == null ? null : creds.getGitRepo(), cfg.getRepo());
+        String owner;
+        String repoName;
+        boolean autoCreate;
+        if (StringUtils.hasText(explicitRepo) && explicitRepo.indexOf('/') > 0
+                && explicitRepo.indexOf('/') < explicitRepo.length() - 1) {
+            owner = explicitRepo.substring(0, explicitRepo.indexOf('/'));
+            repoName = explicitRepo.substring(explicitRepo.indexOf('/') + 1);
+            autoCreate = false;
+        } else {
+            owner = firstNonBlank(git.getOrganization(), creds == null ? null : creds.getGitOrganization());
+            repoName = safeRepoName(companyName) + "-kong-config";
+            autoCreate = true;
+        }
+        if (!StringUtils.hasText(token) || !StringUtils.hasText(owner)) {
+            return skip("no git organization/token (git_profiles for company '" + companyName
+                    + "' or deck.git fallback)");
+        }
+        String repo = owner + "/" + repoName;
         WebClient gh = githubClient(cfg, token);
 
         int pushed = 0;
         String lastSha = null;
         String lastUrl = null;
         try {
+            if (autoCreate) {
+                ensureRepo(gh, owner, repoName);   // create the Kong-config repo on first run
+            }
+            ensureBranch(gh, owner, repoName, branch);
             for (Map.Entry<String, String> e : files.entrySet()) {
                 String path = e.getKey();
-                String existingSha = getSha(gh, owner, name, path, branch);
+                String existingSha = getSha(gh, owner, repoName, path, branch);
                 if (existingSha != null && createOnlyPaths != null && createOnlyPaths.contains(path)) {
                     log.debug("Skipping existing create-only file {}", path);
                     continue;   // workflow/README written once, not re-committed every run
                 }
-                Map<String, Object> commit = putFile(gh, owner, name, path, branch,
+                Map<String, Object> commit = putFile(gh, owner, repoName, path, branch,
                         e.getValue(), existingSha, message, cfg);
                 pushed++;
-                if (commit != null) {
-                    Object c = commit.get("commit");
-                    if (c instanceof Map<?, ?> cm) {
-                        lastSha = str(cm.get("sha"));
-                        lastUrl = str(cm.get("html_url"));
-                    }
+                if (commit != null && commit.get("commit") instanceof Map<?, ?> cm) {
+                    lastSha = str(cm.get("sha"));
+                    lastUrl = str(cm.get("html_url"));
                 }
             }
         } catch (WebClientResponseException ex) {
