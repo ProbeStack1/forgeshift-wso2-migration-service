@@ -23,6 +23,7 @@ class BundleBuilderTest {
     void buildsZipWithThreeEntriesAndApplyModeWorkflow(@TempDir Path tmp) throws IOException {
         MigrationProperties props = new MigrationProperties();
         props.getDeck().setBundleDir(tmp.toString());
+        props.getDeck().setCallbackBaseUrl("https://probestack.io/wso2/migration/v1");
         BundleBuilder bb = new BundleBuilder(props);
 
         BundleResult res = bb.build("job123", "dev", "my-cp", "https://us.api.konghq.com",
@@ -41,6 +42,7 @@ class BundleBuilderTest {
         assertTrue(wf.contains("deck_mode: apply"));
         assertTrue(wf.contains("control_plane_name: my-cp"));
         assertTrue(wf.contains("konnect_addr: https://us.api.konghq.com"));
+        assertTrue(wf.contains("result_callback_url: https://probestack.io/wso2/migration/v1/migrations/job123/deck-result"));
         assertTrue(wf.contains("secrets.KONNECT_TOKEN"));
         assertFalse(wf.contains("kpat_"), "must not hardcode a Konnect PAT");
     }

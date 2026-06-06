@@ -151,7 +151,9 @@ forgeshift:
       download-base-url: ${DECK_DOWNLOAD_BASE_URL:}
       # Public base URL of this service; when set, the generated workflow POSTs the apply
       # report + dump back to {callback-base-url}/migrations/{id}/deck-result automatically.
-      callback-base-url: ${DECK_CALLBACK_BASE_URL:}
+      # Defaults to DECK_DOWNLOAD_BASE_URL so one public service URL can power both bundle
+      # downloads and the pipeline callback.
+      callback-base-url: ${DECK_CALLBACK_BASE_URL:${DECK_DOWNLOAD_BASE_URL:}}
       storage: ${DECK_STORAGE:temp}
       # Auto-commit the generated files to the Kong-config repo (else just produce the bundle).
       # repo/branch/token come from the kong_konnect_profiles row when present, else from here.

@@ -46,7 +46,9 @@ public class Wso2ProfileReader {
         }
 
         Query q = Query.query(Criteria.where("companyName").is(companyName)
-                        .and("tenants").is(wso2Tenant))
+                        .orOperator(
+                                Criteria.where("defaultWso2Tenant").is(wso2Tenant),
+                                Criteria.where("tenants").is(wso2Tenant)))
                 .with(Sort.by(Sort.Direction.DESC, "updatedAt"));
         Document chosen = mongoTemplate.find(q, Document.class,
                         props.getWso2ProfilesCollection())

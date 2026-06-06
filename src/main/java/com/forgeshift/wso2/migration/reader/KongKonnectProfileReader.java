@@ -4,6 +4,7 @@ import com.forgeshift.wso2.migration.config.MigrationProperties;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.bson.Document;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
@@ -38,6 +39,18 @@ public class KongKonnectProfileReader {
                     .and("status").is("ACTIVE"));
             Document doc = mongoTemplate.findOne(q, Document.class,
                     props.getKongKonnectProfilesCollection());
+            if (doc == null && "primary".equalsIgnoreCase(desiredName)) {
+                Query fallback = Query.query(Criteria.where("companyName").is(companyName)
+                                .and("status").is("ACTIVE"))
+                        .with(Sort.by(Sort.Direction.DESC, "lastUpdatedAt", "updatedAt", "createdAt"));
+                List<Document> activeProfiles = mongoTemplate.find(fallback, Document.class,
+                        props.getKongKonnectProfilesCollection());
+                if (activeProfiles.size() == 1) {
+                    doc = activeProfiles.get(0);
+                    log.info("No Kong Konnect profile named 'primary' for company={}; using sole ACTIVE profile '{}'",
+                            companyName, doc.getString("profileName"));
+                }
+            }
             if (doc != null) {
                 log.debug("Using Kong Konnect profile (company={}, profileName={})", companyName, desiredName);
                 Document selectedControlPlane = selectedControlPlane(doc, requestedControlPlaneId);
