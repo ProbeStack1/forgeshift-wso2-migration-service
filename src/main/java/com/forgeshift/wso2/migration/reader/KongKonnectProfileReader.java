@@ -12,6 +12,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
 /**
  * Reads Kong Konnect profiles written by the profile-config service from the
@@ -112,29 +114,47 @@ public class KongKonnectProfileReader {
         creds.setGitGithubUrl(firstString(doc, "githubUrl"));
     }
 
-    @SuppressWarnings("unchecked")
     private static Document selectedControlPlane(Document doc, String requestedControlPlaneId) {
         Object value = doc.get("controlPlanes");
         if (!(value instanceof List<?> controlPlanes) || controlPlanes.isEmpty()) {
             return null;
         }
 
+        List<Document> controlPlaneDocs = controlPlanes.stream()
+                .map(KongKonnectProfileReader::asDocument)
+                .filter(Objects::nonNull)
+                .toList();
+
         if (StringUtils.hasText(requestedControlPlaneId)) {
-            return controlPlanes.stream()
-                    .filter(Document.class::isInstance)
-                    .map(Document.class::cast)
+            return controlPlaneDocs.stream()
                     .filter(cp -> requestedControlPlaneId.equals(cp.getString("controlPlaneId")))
                     .findFirst()
                     .orElseThrow(() -> new IllegalArgumentException(
                             "Control Plane not found in Kong Konnect profile: " + requestedControlPlaneId));
         }
 
-        if (controlPlanes.size() == 1 && controlPlanes.get(0) instanceof Document controlPlane) {
-            return controlPlane;
+        if (controlPlaneDocs.size() == 1) {
+            return controlPlaneDocs.get(0);
         }
 
         throw new IllegalArgumentException(
                 "Multiple Kong control planes found. Pass kongCtrlPlanId to select the target control plane.");
+    }
+
+    private static Document asDocument(Object value) {
+        if (value instanceof Document document) {
+            return document;
+        }
+        if (value instanceof Map<?, ?> map) {
+            Document document = new Document();
+            map.forEach((key, mapValue) -> {
+                if (key != null) {
+                    document.put(key.toString(), mapValue);
+                }
+            });
+            return document;
+        }
+        return null;
     }
 
     private static String controlPlaneId(Document doc, Document controlPlane) {

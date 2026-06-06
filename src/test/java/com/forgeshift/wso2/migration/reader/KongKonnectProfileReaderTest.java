@@ -7,6 +7,7 @@ import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Query;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
@@ -88,6 +89,42 @@ class KongKonnectProfileReaderTest {
         assertEquals("profile", creds.getSource());
         assertEquals("https://us.api.konghq.com", creds.getKonnectBaseUrl());
         assertEquals("kpat_test", creds.getKonnectAccessToken());
+        assertEquals("78ac8c8b-74a8-4338-875f-2ccaee19a52c", creds.getControlPlaneId());
+        assertEquals("probestack-kong", creds.getControlPlaneName());
+    }
+
+    @Test
+    void resolvesDynamicControlPlaneNameWhenControlPlanesAreMaps() {
+        MongoTemplate mongo = mock(MongoTemplate.class);
+        MigrationProperties props = new MigrationProperties();
+        KongKonnectProfileReader reader = new KongKonnectProfileReader(mongo, props);
+
+        Document profile = new Document()
+                .append("_id", "probestack|primary")
+                .append("companyName", "probestack")
+                .append("profileName", "primary")
+                .append("konnectBaseUrl", "https://us.api.konghq.com")
+                .append("konnectAccessToken", "kpat_test")
+                .append("controlPlaneId", "78ac8c8b-74a8-4338-875f-2ccaee19a52c")
+                .append("region", "us")
+                .append("status", "ACTIVE")
+                .append("controlPlanes", List.of(
+                        Map.of(
+                                "controlPlaneId", "43dbc26e-23c1-4443-982a-96321e6d0dfb",
+                                "controlPlaneName", "serverless-api-gateway-demo"),
+                        Map.of(
+                                "controlPlaneId", "78ac8c8b-74a8-4338-875f-2ccaee19a52c",
+                                "controlPlaneName", "probestack-kong")));
+
+        when(mongo.find(any(Query.class), eq(Document.class), eq("kong_konnect_profiles")))
+                .thenReturn(List.of(profile));
+
+        KongKonnectCredentials creds = reader.resolve(
+                "probestack",
+                "primary",
+                "78ac8c8b-74a8-4338-875f-2ccaee19a52c",
+                null);
+
         assertEquals("78ac8c8b-74a8-4338-875f-2ccaee19a52c", creds.getControlPlaneId());
         assertEquals("probestack-kong", creds.getControlPlaneName());
     }
