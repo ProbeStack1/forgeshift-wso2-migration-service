@@ -139,7 +139,7 @@ forgeshift:
       format-version: "3.0"
       transform: true
       env-name: ${DECK_ENV:dev}
-      pipeline-template-ref: ${DECK_PIPELINE_TEMPLATE_REF:ForgeCrux/pipeline-template/.github/workflows/kong.yaml@main}
+      pipeline-template-ref: ${DECK_PIPELINE_TEMPLATE_REF:ProbeStack1/pipeline-template-poc/.github/workflows/kong.yaml@main}
       deck-mode: ${DECK_MODE:apply}
       konnect-addr: ${DECK_KONNECT_ADDR:https://us.api.konghq.com}
       kong-config-path-template: ${DECK_KONG_CONFIG_PATH:kong/{env}/kong.yaml}

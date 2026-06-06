@@ -114,7 +114,7 @@ public class MigrationProperties {
         private String formatVersion = "3.0";
         private boolean transform = true;
         private String envName = "dev";
-        private String pipelineTemplateRef = "ForgeCrux/pipeline-template/.github/workflows/kong.yaml@main";
+        private String pipelineTemplateRef = "ProbeStack1/pipeline-template-poc/.github/workflows/kong.yaml@main";
         private String deckMode = "apply";
         private String konnectAddr = "https://us.api.konghq.com";
         private String kongConfigPathTemplate = "kong/{env}/kong.yaml";
