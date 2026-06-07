@@ -97,6 +97,7 @@ public class ApiTranslator {
         List<String> tags = audtTags(snap);
         List<String> wso2Tags = stringList(p.get("tags"));
         if (wso2Tags != null) tags.addAll(wso2Tags);
+        tags.replaceAll(ApiTranslator::safeTag);   // Kong tags reject "/" and ","
 
         // --- Service ----------------------------------------------------------
         KongService service = buildService(safeName, p, tags);
@@ -412,8 +413,17 @@ public class ApiTranslator {
 
     private List<String> tagsWith(List<String> base, String... extras) {
         List<String> out = new ArrayList<>(base);
-        for (String e : extras) if (e != null) out.add(e);
+        for (String e : extras) if (e != null) out.add(safeTag(e));
         return out;
+    }
+
+    /**
+     * Kong tags can't contain the reserved delimiters {@code /} or {@code ,} (and can't
+     * lead/trail with whitespace). The {@code wso2-resource:<uriTemplate>} tag in particular
+     * carries a path like {@code /items/{id}} — sanitise it so {@code deck validate} accepts it.
+     */
+    static String safeTag(String tag) {
+        return tag == null ? null : tag.replace('/', '_').replace(',', '_').trim();
     }
 
     private static String slug(String s) {

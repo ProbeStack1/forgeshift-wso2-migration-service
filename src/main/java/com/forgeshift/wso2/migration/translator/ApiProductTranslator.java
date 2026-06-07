@@ -51,6 +51,7 @@ public class ApiProductTranslator {
         baseTags.add(props.getTranslation().getTagPrefix() + ":" + snap.getSourceId());
         baseTags.add(props.getTranslation().getMigratedByTag());
         baseTags.add("wso2-api-product:" + productName);
+        baseTags.replaceAll(ApiTranslator::safeTag);   // Kong tags reject "/" and ","
 
         List<String> warnings = new ArrayList<>();
 
@@ -234,7 +235,7 @@ public class ApiProductTranslator {
 
     private static List<String> tagsWith(List<String> base, String... extras) {
         List<String> out = new ArrayList<>(base);
-        for (String e : extras) if (e != null) out.add(e);
+        for (String e : extras) if (e != null) out.add(ApiTranslator.safeTag(e));
         return out;
     }
 

@@ -39,5 +39,12 @@ class ApiTranslatorTest {
         assertTrue(paths.contains("/users/items"));
         assertTrue(paths.contains("~/users/items/(?<id>[^/]+)$"));
         assertEquals(2, paths.size());
+
+        // Kong tags can't contain "/" — the wso2-resource tag carries the URI template.
+        List<String> tags = api.getRoutes().stream()
+                .flatMap(route -> route.getTags().stream())
+                .toList();
+        assertTrue(tags.stream().noneMatch(t -> t.contains("/")), "route tags must not contain '/'");
+        assertTrue(tags.contains("wso2-resource:_items_{id}"));
     }
 }
