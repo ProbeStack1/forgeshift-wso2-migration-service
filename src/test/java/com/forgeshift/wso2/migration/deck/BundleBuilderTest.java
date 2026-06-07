@@ -64,6 +64,23 @@ class BundleBuilderTest {
         assertFalse(wf.contains("secrets.KONNECT_TOKEN"));
     }
 
+    @Test
+    void workflowCanInlineResolvedKonnectTokenForTestPipeline(@TempDir Path tmp) throws IOException {
+        MigrationProperties props = new MigrationProperties();
+        props.getDeck().setBundleDir(tmp.toString());
+        props.getDeck().setKonnectTokenViaVariable(true);
+        BundleBuilder bb = new BundleBuilder(props);
+
+        BundleResult res = bb.build("job123", "dev", "my-cp", "https://us.api.konghq.com",
+                "kpat_test_token", Map.of("kong/dev/api-petstore.yaml", "_format_version: \"3.0\"\n"));
+
+        String wf = unzip(Files.readAllBytes(Path.of(res.getBundlePath())))
+                .get(".github/workflows/deploy-dev.yml");
+        assertTrue(wf.contains("konnect_token: 'kpat_test_token'"));
+        assertFalse(wf.contains("vars.KONNECT_TOKEN"));
+        assertFalse(wf.contains("secrets.KONNECT_TOKEN"));
+    }
+
     private static Map<String, String> unzip(byte[] bytes) throws IOException {
         Map<String, String> out = new HashMap<>();
         try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(bytes))) {

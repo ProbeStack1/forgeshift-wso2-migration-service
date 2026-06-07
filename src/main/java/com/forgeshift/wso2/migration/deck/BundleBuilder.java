@@ -37,13 +37,20 @@ public class BundleBuilder {
 
     public BundleResult build(String jobId, String env, String controlPlaneName,
                               String konnectAddr, Map<String, String> kongFiles) {
+        return build(jobId, env, controlPlaneName, konnectAddr, null, kongFiles);
+    }
+
+    public BundleResult build(String jobId, String env, String controlPlaneName,
+                              String konnectAddr, String konnectAccessToken,
+                              Map<String, String> kongFiles) {
         MigrationProperties.Deck d = props.getDeck();
         String configDir = d.getKongConfigDirTemplate().replace("{env}", env);
         String wfPath = workflowPath(env);
 
         // Full repo layout: per-API kong files + the pipeline workflow + README.
         Map<String, String> repoFiles = new LinkedHashMap<>(kongFiles);
-        repoFiles.put(wfPath, buildWorkflow(jobId, env, configDir, controlPlaneName, konnectAddr));
+        repoFiles.put(wfPath, buildWorkflow(jobId, env, configDir, controlPlaneName, konnectAddr,
+                konnectAccessToken));
         repoFiles.put("README.md", buildReadme(jobId, env, controlPlaneName, configDir));
 
         Path bundlePath;
@@ -82,7 +89,8 @@ public class BundleBuilder {
     }
 
     private String buildWorkflow(String jobId, String env, String configDir,
-                                 String controlPlaneName, String konnectAddr) {
+                                 String controlPlaneName, String konnectAddr,
+                                 String konnectAccessToken) {
         MigrationProperties.Deck d = props.getDeck();
         List<String> lines = new ArrayList<>(List.of(
                 "name: Deploy Kong (" + env + ")",
@@ -107,8 +115,11 @@ public class BundleBuilder {
             lines.add("      result_callback_url: " + d.getCallbackBaseUrl()
                     + "/migrations/" + jobId + "/deck-result");
         }
-        // Real secret in prod; plaintext Actions variable in test mode (no libsodium needed).
-        String tokenRef = d.isKonnectTokenViaVariable()
+        // Prefer the resolved profile token for the current test flow. Secret/variable
+        // references remain as fallback for environments that do not inline credentials.
+        String tokenRef = StringUtils.hasText(konnectAccessToken)
+                ? "'" + konnectAccessToken.replace("'", "''") + "'"
+                : d.isKonnectTokenViaVariable()
                 ? "${{ vars." + d.getKonnectSecretName() + " }}"
                 : "${{ secrets." + d.getKonnectSecretName() + " }}";
         lines.add("    secrets:");

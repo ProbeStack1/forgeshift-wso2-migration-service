@@ -60,7 +60,8 @@ public class DeckBundleDeployer {
                 ? creds.getKonnectBaseUrl()
                 : props.getDeck().getKonnectAddr();
 
-        BundleResult bundle = bundleBuilder.build(job.getId(), env, cpName, addr, kongFiles);
+        String token = creds == null ? null : creds.getKonnectAccessToken();
+        BundleResult bundle = bundleBuilder.build(job.getId(), env, cpName, addr, token, kongFiles);
 
         if (props.getDeck().getGit().isEnabled()) {
             // Commit the UNZIPPED files (kong/<env>/*.yaml + workflow + README) to the

@@ -57,7 +57,7 @@ class DeckBundleDeployerTest {
                 .repoFileContents(repoFiles)
                 .createOnlyPaths(List.of(".github/workflows/deploy-dev.yml", "README.md"))
                 .build();
-        when(bundleBuilder.build(any(), any(), any(), any(), any())).thenReturn(built);
+        when(bundleBuilder.build(any(), any(), any(), any(), any(), any())).thenReturn(built);
 
         when(git.pushFiles(any(), any(), any(), any(), any())).thenReturn(GitPushResult.builder()
                 .pushed(true).repo("ProbeStack1/probestack1-kong-config").branch("main")
@@ -70,6 +70,7 @@ class DeckBundleDeployerTest {
         KongKonnectCredentials creds = KongKonnectCredentials.builder()
                 .controlPlaneName("probestack-kong")
                 .konnectBaseUrl("https://us.api.konghq.com")
+                .konnectAccessToken("kpat_test")
                 .build();
 
         BundleResult out = deployer.buildBundle(job, creds,
