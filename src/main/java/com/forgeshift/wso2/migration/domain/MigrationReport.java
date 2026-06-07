@@ -56,6 +56,8 @@ public class MigrationReport {
     private String gitBranch;
     private String gitCommitSha;
     private String gitCommitUrl;
+    private Integer gitFilesPushed;
+    private String gitError;
 
     private Instant generatedAt;
 

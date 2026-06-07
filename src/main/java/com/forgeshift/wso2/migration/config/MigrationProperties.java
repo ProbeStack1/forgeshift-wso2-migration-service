@@ -122,6 +122,14 @@ public class MigrationProperties {
         /** Directory the per-API files live in (decK merges every file in it). */
         private String kongConfigDirTemplate = "kong/{env}";
         private String konnectSecretName = "KONNECT_TOKEN";
+        /**
+         * TEST-ONLY: deliver the Konnect token to the pipeline as a plaintext GitHub Actions
+         * VARIABLE (auto-set by the service once the repo exists) instead of an encrypted
+         * secret. The generated workflow then reads {@code ${{ vars.<name> }}} rather than
+         * {@code ${{ secrets.<name> }}}. INSECURE — the value is visible in the repo's Actions
+         * settings; switch to a real secret for production.
+         */
+        private boolean konnectTokenViaVariable = false;
         private String controlPlaneNameFallback = "";
         private String bundleDir = System.getProperty("java.io.tmpdir") + "/kong-bundles";
         private String downloadBaseUrl = "";

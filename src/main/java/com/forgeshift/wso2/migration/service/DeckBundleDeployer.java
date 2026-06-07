@@ -77,6 +77,7 @@ public class DeckBundleDeployer {
             bundle.setGitCommitSha(push.getCommitSha());
             bundle.setGitCommitUrl(push.getCommitUrl());
             bundle.setGitFilesPushed(push.getFilesPushed());
+            bundle.setGitError(push.getError());
             if (!push.isPushed() && push.getError() != null) {
                 log.warn("Auto-commit not completed for job {}: {}", job.getId(), push.getError());
             }

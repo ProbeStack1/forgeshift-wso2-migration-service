@@ -107,8 +107,12 @@ public class BundleBuilder {
             lines.add("      result_callback_url: " + d.getCallbackBaseUrl()
                     + "/migrations/" + jobId + "/deck-result");
         }
+        // Real secret in prod; plaintext Actions variable in test mode (no libsodium needed).
+        String tokenRef = d.isKonnectTokenViaVariable()
+                ? "${{ vars." + d.getKonnectSecretName() + " }}"
+                : "${{ secrets." + d.getKonnectSecretName() + " }}";
         lines.add("    secrets:");
-        lines.add("      konnect_token: ${{ secrets." + d.getKonnectSecretName() + " }}");
+        lines.add("      konnect_token: " + tokenRef);
         lines.add("");
         return String.join("\n", lines);
     }

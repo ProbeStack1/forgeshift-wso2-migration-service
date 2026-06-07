@@ -47,6 +47,23 @@ class BundleBuilderTest {
         assertFalse(wf.contains("kpat_"), "must not hardcode a Konnect PAT");
     }
 
+    @Test
+    void workflowReadsPlaintextVariableWhenKonnectTokenViaVariableEnabled(@TempDir Path tmp) throws IOException {
+        MigrationProperties props = new MigrationProperties();
+        props.getDeck().setBundleDir(tmp.toString());
+        props.getDeck().setKonnectTokenViaVariable(true);   // TEST mode (no encrypted secret)
+        BundleBuilder bb = new BundleBuilder(props);
+
+        BundleResult res = bb.build("job123", "dev", "my-cp", "https://us.api.konghq.com",
+                Map.of("kong/dev/api-petstore.yaml", "_format_version: \"3.0\"\n"));
+
+        String wf = unzip(Files.readAllBytes(Path.of(res.getBundlePath())))
+                .get(".github/workflows/deploy-dev.yml");
+        assertTrue(wf.contains("konnect_token: ${{ vars.KONNECT_TOKEN }}"),
+                "TEST mode must read the token from a plaintext Actions variable");
+        assertFalse(wf.contains("secrets.KONNECT_TOKEN"));
+    }
+
     private static Map<String, String> unzip(byte[] bytes) throws IOException {
         Map<String, String> out = new HashMap<>();
         try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(bytes))) {

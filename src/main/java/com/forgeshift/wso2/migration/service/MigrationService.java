@@ -817,6 +817,8 @@ public class MigrationService {
                 .gitBranch(bundle != null ? bundle.getGitBranch() : null)
                 .gitCommitSha(bundle != null ? bundle.getGitCommitSha() : null)
                 .gitCommitUrl(bundle != null ? bundle.getGitCommitUrl() : null)
+                .gitFilesPushed(bundle != null ? bundle.getGitFilesPushed() : null)
+                .gitError(bundle != null ? bundle.getGitError() : null)
                 .generatedAt(Instant.now())
                 .build();
         reportRepository.save(report);

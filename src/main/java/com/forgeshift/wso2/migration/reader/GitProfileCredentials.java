@@ -9,6 +9,8 @@ import lombok.Data;
 public class GitProfileCredentials {
     private String source;          // "profile" or "missing"
     private String organization;    // e.g. ProbeStack1
+    private String repo;            // e.g. ProbeStack1/probestack-kong-config
+    private String branch;          // e.g. main
     private String pat;             // GitHub personal access token
     private String githubUrl;       // e.g. https://github.com/ProbeStack1
 }

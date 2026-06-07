@@ -38,4 +38,5 @@ public class BundleResult {
     private String gitCommitSha;
     private String gitCommitUrl;
     private Integer gitFilesPushed;
+    private String gitError;
 }

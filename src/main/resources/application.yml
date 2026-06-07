@@ -146,6 +146,10 @@ forgeshift:
       kong-config-path-template: ${DECK_KONG_CONFIG_PATH:kong/{env}/kong.yaml}
       kong-config-dir-template: ${DECK_KONG_CONFIG_DIR:kong/{env}}
       konnect-secret-name: ${DECK_KONNECT_SECRET_NAME:KONNECT_TOKEN}
+      # TEST-ONLY: when true, the service sets a PLAINTEXT Actions variable named
+      # {konnect-secret-name} on the repo (no libsodium needed) and the generated workflow
+      # reads it via ${{ vars.NAME }}. INSECURE — use a real encrypted secret in prod.
+      konnect-token-via-variable: ${DECK_KONNECT_TOKEN_VIA_VARIABLE:true}
       control-plane-name-fallback: ${DECK_CONTROL_PLANE_NAME:}
       bundle-dir: ${DECK_BUNDLE_DIR:${java.io.tmpdir}/kong-bundles}
       download-base-url: ${DECK_DOWNLOAD_BASE_URL:}

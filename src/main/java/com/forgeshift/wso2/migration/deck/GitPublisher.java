@@ -50,8 +50,9 @@ public class GitPublisher {
         GitProfileCredentials git = gitProfileReader.resolve(companyName);
         String token = firstNonBlank(git.getPat(),
                 firstNonBlank(creds == null ? null : creds.getGitToken(), cfg.getToken()));
-        String owner = firstNonBlank(git.getOrganization(), ownerFromRepo(cfg.getRepo()));
-        String branch = firstNonBlank(creds == null ? null : creds.getGitBranch(), cfg.getBranch());
+        String owner = firstNonBlank(git.getOrganization(), ownerFromRepo(firstNonBlank(git.getRepo(), cfg.getRepo())));
+        String branch = firstNonBlank(creds == null ? null : creds.getGitBranch(),
+                firstNonBlank(git.getBranch(), cfg.getBranch()));
         if (!StringUtils.hasText(token) || !StringUtils.hasText(owner)) {
             return skip("no git organization/token (git_profiles for company '" + companyName
                     + "' or deck.git fallback)");
@@ -127,11 +128,13 @@ public class GitPublisher {
         GitProfileCredentials git = gitProfileReader.resolve(companyName);
         String token = firstNonBlank(git.getPat(),
                 firstNonBlank(creds == null ? null : creds.getGitToken(), cfg.getToken()));
-        String branch = firstNonBlank(creds == null ? null : creds.getGitBranch(), cfg.getBranch());
+        String branch = firstNonBlank(creds == null ? null : creds.getGitBranch(),
+                firstNonBlank(git.getBranch(), cfg.getBranch()));
 
         // Explicit owner/repo (Konnect profile gitRepo or deck.git.repo) wins; else derive
         // <organization>/<company>-kong-config from the git_profiles org and auto-create it.
-        String explicitRepo = firstNonBlank(creds == null ? null : creds.getGitRepo(), cfg.getRepo());
+        String explicitRepo = firstNonBlank(creds == null ? null : creds.getGitRepo(),
+                firstNonBlank(git.getRepo(), cfg.getRepo()));
         String owner;
         String repoName;
         boolean autoCreate;
@@ -160,6 +163,9 @@ public class GitPublisher {
                 ensureRepo(gh, owner, repoName);   // create the Kong-config repo on first run
             }
             ensureBranch(gh, owner, repoName, branch);
+            // Set the Konnect token as a plaintext Actions variable BEFORE the commits so it
+            // exists when the push triggers the run (test mode only; no-op otherwise).
+            maybeSetKonnectVariable(gh, owner, repoName, creds);
             for (Map.Entry<String, String> e : files.entrySet()) {
                 String path = e.getKey();
                 String existingSha = getSha(gh, owner, repoName, path, branch);
@@ -190,6 +196,46 @@ public class GitPublisher {
         return GitPushResult.builder()
                 .pushed(pushed > 0).repo(repo).branch(branch)
                 .commitSha(lastSha).commitUrl(lastUrl).filesPushed(pushed).build();
+    }
+
+    /**
+     * TEST-ONLY: when {@code deck.konnect-token-via-variable=true}, upsert a plaintext GitHub
+     * Actions <b>variable</b> (name = {@code deck.konnect-secret-name}) on the repo holding the
+     * Konnect token, so the generated workflow can read it via {@code ${{ vars.NAME }}} without a
+     * libsodium-encrypted secret. Best-effort — a failure here never fails the file push.
+     * INSECURE: the value is visible in the repo's Actions settings; use a real secret in prod.
+     */
+    private void maybeSetKonnectVariable(WebClient gh, String owner, String repo,
+                                         KongKonnectCredentials creds) {
+        MigrationProperties.Deck d = props.getDeck();
+        if (!d.isKonnectTokenViaVariable()) {
+            return;
+        }
+        String token = creds == null ? null : creds.getKonnectAccessToken();
+        if (!StringUtils.hasText(token)) {
+            log.warn("konnect-token-via-variable=true but no Konnect token resolved — skipping variable on {}/{}",
+                    owner, repo);
+            return;
+        }
+        String name = d.getKonnectSecretName();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("name", name);
+        body.put("value", token);
+        try {
+            gh.post().uri("/repos/{owner}/{repo}/actions/variables", owner, repo)
+                    .bodyValue(body).retrieve().bodyToMono(Void.class).block();
+            log.info("Set Actions variable {} on {}/{} (TEST mode — plaintext, NOT a secret)", name, owner, repo);
+        } catch (WebClientResponseException.Conflict existing) {
+            try {
+                gh.patch().uri("/repos/{owner}/{repo}/actions/variables/{name}", owner, repo, name)
+                        .bodyValue(body).retrieve().bodyToMono(Void.class).block();
+                log.info("Updated Actions variable {} on {}/{} (TEST mode)", name, owner, repo);
+            } catch (Exception ex) {
+                log.warn("Could not update Actions variable {} on {}/{}: {}", name, owner, repo, ex.getMessage());
+            }
+        } catch (Exception ex) {
+            log.warn("Could not set Actions variable {} on {}/{}: {}", name, owner, repo, ex.getMessage());
+        }
     }
 
     private WebClient githubClient(MigrationProperties.Deck.Git cfg, String token) {

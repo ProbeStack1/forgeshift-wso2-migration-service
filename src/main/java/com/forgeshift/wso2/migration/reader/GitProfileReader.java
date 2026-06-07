@@ -34,6 +34,8 @@ public class GitProfileReader {
                 return GitProfileCredentials.builder()
                         .source("profile")
                         .organization(firstString(doc, "organization"))
+                        .repo(firstString(doc, "repo", "gitRepo", "configRepo", "kongConfigRepo"))
+                        .branch(firstString(doc, "branch", "gitBranch", "configBranch"))
                         .pat(firstString(doc, "pat", "token", "githubToken"))
                         .githubUrl(doc.getString("githubUrl"))
                         .build();
