@@ -440,14 +440,17 @@ public class ApiTranslator {
     /**
      * Kong Gateway 3.x route paths do not accept WSO2/OpenAPI template segments
      * like {@code /items/{id}} as plain paths. Convert templated paths to regex
-     * paths with the required {@code ~} prefix while leaving ordinary prefix
-     * routes unchanged.
+     * paths with the required {@code ~/} prefix (Kong rejects {@code ~^...} — after
+     * the {@code ~} the regex must begin with {@code /}) while leaving ordinary
+     * prefix routes unchanged.
      */
-    private static String kongRoutePath(String path) {
+    static String kongRoutePath(String path) {
         if (!StringUtils.hasText(path) || !path.contains("{")) {
             return path;
         }
-        StringBuilder out = new StringBuilder("~^");
+        // "~" marks a regex path; the path itself already starts with "/", giving the
+        // required "~/" prefix. (A leading "^" anchor — "~^" — is rejected by Kong 3.x.)
+        StringBuilder out = new StringBuilder("~");
         int i = 0;
         while (i < path.length()) {
             char ch = path.charAt(i);

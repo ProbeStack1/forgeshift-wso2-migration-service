@@ -37,7 +37,7 @@ class ApiTranslatorTest {
                 .flatMap(route -> route.getPaths().stream())
                 .toList();
         assertTrue(paths.contains("/users/items"));
-        assertTrue(paths.contains("~^/users/items/(?<id>[^/]+)$"));
+        assertTrue(paths.contains("~/users/items/(?<id>[^/]+)$"));
         assertEquals(2, paths.size());
     }
 }

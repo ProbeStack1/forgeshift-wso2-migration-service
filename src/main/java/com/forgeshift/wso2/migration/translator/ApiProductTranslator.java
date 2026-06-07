@@ -84,7 +84,8 @@ public class ApiProductTranslator {
                     String target = str(op.get("target"));
                     if (!StringUtils.hasText(verb) || !StringUtils.hasText(target)) continue;
                     String tier = str(op.get("throttlingPolicy"));
-                    String path = joinPaths(context, normalize(target));
+                    // Kong 3.x: templated paths (/items/{id}) must become ~/ regex paths.
+                    String path = ApiTranslator.kongRoutePath(joinPaths(context, normalize(target)));
 
                     List<KongPlugin> routePlugins = copies(productPlugins);
                     if (StringUtils.hasText(tier) && !"Unlimited".equalsIgnoreCase(tier)) {
