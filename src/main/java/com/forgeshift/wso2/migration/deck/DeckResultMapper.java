@@ -97,6 +97,9 @@ public class DeckResultMapper {
         }
 
         List<String> failed = extractErrors(applyReport);
+        for (String f : failed) {
+            log.warn("decK apply error (job {}): {}", job.getId(), f);
+        }
         log.info("decK result ingested for job {} — {} mappings written, {} apply error(s)",
                 job.getId(), rows.size(), failed.size());
         return Summary.builder()

@@ -59,6 +59,10 @@ public class MigrationReport {
     private Integer gitFilesPushed;
     private String gitError;
 
+    /** decK apply outcome from the pipeline callback (POST /migrations/{id}/deck-result). */
+    private Integer deckApplyErrorCount;
+    private List<String> deckApplyErrors;
+
     private Instant generatedAt;
 
     @Data

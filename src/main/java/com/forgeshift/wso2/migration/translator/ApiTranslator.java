@@ -140,55 +140,64 @@ public class ApiTranslator {
                 .upstream(upstream)
                 .targets(targets);
 
+        // --- Route: ONE per API at the WSO2 context --------------------------
+        // WSO2 forwards <gateway>/<context>/<version>/<resource> to <backend>/<resource>:
+        // it strips the context (+version) and keeps the resource path. The faithful Kong
+        // equivalent is a SINGLE route at the context with strip_path=true — Kong strips
+        // only the matched context prefix, so the resource path AND any path params
+        // (e.g. /items/{id}) flow through to the backend unchanged.
+        //
+        // The previous per-resource routes used paths=[context+resource] with
+        // strip_path=true, which stripped the resource too and forwarded "/" to the
+        // backend (every call hit the upstream root instead of the real resource).
         List<KongRoute> routes = new ArrayList<>();
         Map<String, List<KongPlugin>> routePlugins = new HashMap<>();
         List<Map<String, Object>> ops = listOfMaps(p.get("operations"));
-        // When the api.json carries no operations[] but we have a swagger spec
-        // in the bundle, synthesise operations from the swagger paths so each
-        // verb still gets its own Kong route.
         if ((ops == null || ops.isEmpty()) && bundle != null) {
             ops = operationsFromSwagger(bundle.getSwaggerJson());
         }
-        if (ops == null || ops.isEmpty()) {
-            // Fallback: one route at the context, all methods
-            KongRoute r = KongRoute.builder()
-                    .name(safeName + "--root")
-                    .protocols(protocols)
-                    .methods(List.of("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"))
-                    .paths(List.of(context))
-                    .strip_path(true)
-                    .service(Map.of("name", safeName))
-                    .tags(tags)
-                    .build();
-            routes.add(r);
-        } else {
+        // Collect the distinct verbs (so only methods WSO2 exposes are allowed), the
+        // resource templates (kept as audit tags), and the strictest per-operation
+        // throttling tier (collapsed to one route-scoped rate-limit since there is now
+        // a single route per API).
+        LinkedHashSet<String> methods = new LinkedHashSet<>();
+        List<String> resourceTags = new ArrayList<>();
+        String strictestTier = null;
+        Integer strictestRpm = null;
+        if (ops != null) {
             for (Map<String, Object> op : ops) {
                 String verb = upper(str(op.get("verb")));
                 String target = str(op.get("target"));
+                if (StringUtils.hasText(verb)) methods.add(verb);
+                if (StringUtils.hasText(target)) resourceTags.add("wso2-resource:" + target);
                 String tier = str(op.get("throttlingPolicy"));
-                if (!StringUtils.hasText(verb) || !StringUtils.hasText(target)) continue;
-
-                String path = kongRoutePath(joinPaths(context, normalizeTemplate(target)));
-                String routeName = safeName + "--" + verb.toLowerCase() + slug(target);
-                KongRoute r = KongRoute.builder()
-                        .name(routeName)
-                        .protocols(protocols)
-                        .methods(List.of(verb))
-                        .paths(List.of(path))
-                        .strip_path(true)
-                        .service(Map.of("name", safeName))
-                        .tags(tagsWith(tags, "wso2-resource:" + target, "wso2-verb:" + verb))
-                        .build();
-                routes.add(r);
-
-                // Per-resource throttling tier becomes a route-scoped rate-limiting plugin
                 if (StringUtils.hasText(tier) && !"Unlimited".equalsIgnoreCase(tier)) {
                     Integer rpm = props.getTranslation().getThrottlingTierMap().get(tier);
                     if (rpm == null) rpm = props.getTranslation().getDefaultThrottleRpm();
-                    KongPlugin rl = rateLimit(rpm, tagsWith(tags, "wso2-tier:" + tier));
-                    routePlugins.computeIfAbsent(routeName, k -> new ArrayList<>()).add(rl);
+                    if (strictestRpm == null || rpm < strictestRpm) {
+                        strictestRpm = rpm;
+                        strictestTier = tier;
+                    }
                 }
             }
+        }
+        if (methods.isEmpty()) {
+            methods.addAll(List.of("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"));
+        }
+        String routeName = safeName + "--all";
+        KongRoute route = KongRoute.builder()
+                .name(routeName)
+                .protocols(protocols)
+                .methods(new ArrayList<>(methods))
+                .paths(List.of(kongRoutePath(context)))
+                .strip_path(true)
+                .service(Map.of("name", safeName))
+                .tags(tagsWith(tags, resourceTags.toArray(new String[0])))
+                .build();
+        routes.add(route);
+        if (strictestRpm != null) {
+            routePlugins.computeIfAbsent(routeName, k -> new ArrayList<>())
+                    .add(rateLimit(strictestRpm, tagsWith(tags, "wso2-tier:" + strictestTier)));
         }
         out.routes(routes);
         out.routePlugins(routePlugins);

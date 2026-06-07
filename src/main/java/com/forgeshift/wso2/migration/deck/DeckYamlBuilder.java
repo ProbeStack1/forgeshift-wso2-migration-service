@@ -16,10 +16,12 @@ import org.springframework.util.StringUtils;
 import org.yaml.snakeyaml.DumperOptions;
 import org.yaml.snakeyaml.Yaml;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Turns the already-translated Kong objects into decK declarative YAML.
@@ -155,19 +157,22 @@ public class DeckYamlBuilder {
 
     private Map<String, Object> serviceNode(TranslatedApi a) {
         Map<String, Object> svc = toMap(a.getService());
+        String svcName = a.getService().getName();
+        svc.put("id", stableId("service:" + svcName));
         List<Object> routeList = new ArrayList<>();
         if (a.getRoutes() != null) {
             for (KongRoute r : a.getRoutes()) {
                 Map<String, Object> routeMap = toMap(r);
                 routeMap.remove("service");   // nested under the service → no FK needed
+                routeMap.put("id", stableId("route:" + svcName + ":" + r.getName()));
                 List<KongPlugin> rps = a.getRoutePlugins() == null ? null : a.getRoutePlugins().get(r.getName());
-                List<Object> rpMaps = pluginMaps(rps);
+                List<Object> rpMaps = pluginMaps(rps, "route:" + svcName + ":" + r.getName());
                 if (!rpMaps.isEmpty()) routeMap.put("plugins", rpMaps);
                 routeList.add(routeMap);
             }
         }
         if (!routeList.isEmpty()) svc.put("routes", routeList);
-        List<Object> spMaps = pluginMaps(a.getServicePlugins());
+        List<Object> spMaps = pluginMaps(a.getServicePlugins(), "service:" + svcName);
         if (!spMaps.isEmpty()) svc.put("plugins", spMaps);
         return svc;
     }
@@ -175,9 +180,15 @@ public class DeckYamlBuilder {
     private Map<String, Object> upstreamNode(TranslatedApi a) {
         if (a.getUpstream() == null) return null;
         Map<String, Object> up = toMap(a.getUpstream());
+        String upName = a.getUpstream().getName();
+        up.put("id", stableId("upstream:" + upName));
         List<Object> tgts = new ArrayList<>();
         if (a.getTargets() != null) {
-            a.getTargets().forEach(t -> tgts.add(toMap(t)));
+            a.getTargets().forEach(t -> {
+                Map<String, Object> tm = toMap(t);
+                tm.put("id", stableId("target:" + upName + ":" + t.getTarget()));
+                tgts.add(tm);
+            });
         }
         if (!tgts.isEmpty()) up.put("targets", tgts);
         return up;
@@ -189,7 +200,9 @@ public class DeckYamlBuilder {
         for (TranslatedConsumer c : consumers) {
             if (c.getConsumer() == null) continue;
             Map<String, Object> cm = toMap(c.getConsumer());
-            List<Object> cps = pluginMaps(c.getConsumerPlugins());
+            Object cid = cm.getOrDefault("username", cm.get("custom_id"));
+            cm.put("id", stableId("consumer:" + cid));
+            List<Object> cps = pluginMaps(c.getConsumerPlugins(), "consumer:" + cid);
             if (!cps.isEmpty()) cm.put("plugins", cps);
             out.add(cm);
         }
@@ -201,7 +214,9 @@ public class DeckYamlBuilder {
         if (certificates == null) return out;
         for (TranslatedCertificate tc : certificates) {
             if (tc.getCaCertificate() == null || !StringUtils.hasText(tc.getCaCertificate().getCert())) continue;
-            out.add(toMap(tc.getCaCertificate()));
+            Map<String, Object> cm = toMap(tc.getCaCertificate());
+            cm.put("id", stableId("ca:" + tc.getCaCertificate().getCert()));
+            out.add(cm);
         }
         return out;
     }
@@ -220,7 +235,8 @@ public class DeckYamlBuilder {
                 }
                 Map<String, Object> routeMap = toMap(pr.getRoute());
                 routeMap.put("service", Map.of("name", svcName));
-                List<Object> rpMaps = pluginMaps(pr.getPlugins());
+                routeMap.put("id", stableId("route:product:" + pr.getRoute().getName()));
+                List<Object> rpMaps = pluginMaps(pr.getPlugins(), "route:product:" + pr.getRoute().getName());
                 if (!rpMaps.isEmpty()) routeMap.put("plugins", rpMaps);
                 out.add(routeMap);
             }
@@ -243,6 +259,7 @@ public class DeckYamlBuilder {
             pm.remove("route");
             pm.remove("consumer");
             pm.put("service", Map.of("name", svcName));
+            pm.put("id", stableId("plugin:service:" + svcName + ":mediation:" + m.getWso2SourceId()));
             out.add(pm);
         }
         return out;
@@ -262,7 +279,7 @@ public class DeckYamlBuilder {
         return m;
     }
 
-    private List<Object> pluginMaps(List<KongPlugin> plugins) {
+    private List<Object> pluginMaps(List<KongPlugin> plugins, String parentKey) {
         List<Object> out = new ArrayList<>();
         if (plugins == null) return out;
         for (KongPlugin p : plugins) {
@@ -271,9 +288,21 @@ public class DeckYamlBuilder {
             pm.remove("service");
             pm.remove("route");
             pm.remove("consumer");
+            pm.put("id", stableId("plugin:" + parentKey + ":" + p.getName()));
             out.add(pm);
         }
         return out;
+    }
+
+    /**
+     * Deterministic UUID for a Kong entity, derived from a stable identity key (entity
+     * type + name). Pinning the {@code id} makes {@code deck gateway apply} idempotent:
+     * re-applying the same config matches the existing entity by id and UPDATES it instead
+     * of creating a duplicate with a fresh random id (the failure mode that left two
+     * services with the same name in Konnect and broke every subsequent apply).
+     */
+    private static String stableId(String key) {
+        return UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8)).toString();
     }
 
     private Map<String, Object> newRoot() {

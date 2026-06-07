@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ApiTranslatorTest {
 
     @Test
-    void convertsWso2TemplatePathsToKong3RegexPaths() {
+    void buildsOneRouteAtContextSoBackendResourcePathIsPreserved() {
         ApiTranslator translator = new ApiTranslator(new MigrationProperties());
 
         DiscoverySnapshot snap = DiscoverySnapshot.builder()
@@ -28,23 +28,29 @@ class ApiTranslatorTest {
                                 Map.of("url", "https://backend.example.com")),
                         "operations", List.of(
                                 Map.of("verb", "GET", "target", "/items"),
+                                Map.of("verb", "POST", "target", "/items"),
                                 Map.of("verb", "GET", "target", "/items/{id}"))))
                 .build();
 
         TranslatedApi api = translator.translate(snap);
 
-        List<String> paths = api.getRoutes().stream()
-                .flatMap(route -> route.getPaths().stream())
-                .toList();
-        assertTrue(paths.contains("/users/items"));
-        assertTrue(paths.contains("~/users/items/(?<id>[^/]+)$"));
-        assertEquals(2, paths.size());
+        // ONE route per API, anchored at the WSO2 context with strip_path=true so Kong
+        // strips only "/users" and forwards "/items" (and "/items/42" for path params)
+        // to the backend — matching WSO2 gateway forwarding. (The old per-resource
+        // routes used paths=[/users/items] + strip_path=true and wrongly forwarded "/".)
+        assertEquals(1, api.getRoutes().size());
+        var route = api.getRoutes().get(0);
+        assertEquals(List.of("/users"), route.getPaths());
+        assertTrue(route.getStrip_path());
 
-        // Kong tags can't contain "/" — the wso2-resource tag carries the URI template.
-        List<String> tags = api.getRoutes().stream()
-                .flatMap(route -> route.getTags().stream())
-                .toList();
-        assertTrue(tags.stream().noneMatch(t -> t.contains("/")), "route tags must not contain '/'");
-        assertTrue(tags.contains("wso2-resource:_items_{id}"));
+        // Only the verbs WSO2 exposes are allowed (de-duplicated).
+        assertEquals(2, route.getMethods().size());
+        assertTrue(route.getMethods().contains("GET"));
+        assertTrue(route.getMethods().contains("POST"));
+
+        // Kong tags can't contain "/" — resource templates are kept as sanitised audit tags.
+        assertTrue(route.getTags().stream().noneMatch(t -> t.contains("/")), "route tags must not contain '/'");
+        assertTrue(route.getTags().contains("wso2-resource:_items"));
+        assertTrue(route.getTags().contains("wso2-resource:_items_{id}"));
     }
 }

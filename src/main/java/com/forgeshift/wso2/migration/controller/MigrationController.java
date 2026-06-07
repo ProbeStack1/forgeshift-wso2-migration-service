@@ -303,6 +303,13 @@ public class MigrationController {
         }
         DeckResultMapper.Summary summary =
                 deckResultMapper.ingest(job, body.getKongState(), body.getApplyReport());
+        // Surface the apply failures on the migration report so they're visible via
+        // GET /migrations/{id}/report (instead of only in the pipeline's apply-report.json).
+        reportRepository.findByMigrationJobId(id).ifPresent(report -> {
+            report.setDeckApplyErrorCount(summary.getErrors());
+            report.setDeckApplyErrors(summary.getFailedDetails());
+            reportRepository.save(report);
+        });
         return ResponseEntity.ok(summary);
     }
 
