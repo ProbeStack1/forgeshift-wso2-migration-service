@@ -140,7 +140,7 @@ forgeshift:
       format-version: "3.0"
       transform: true
       env-name: ${DECK_ENV:dev}
-      pipeline-template-ref: ${DECK_PIPELINE_TEMPLATE_REF:ProbeStack1/pipeline-template-poc/.github/workflows/kong.yaml@main}
+      pipeline-template-ref: ${DECK_PIPELINE_TEMPLATE_REF:migrationtestdeck/pipeline-template-poc/.github/workflows/kong.yaml@main}
       deck-mode: ${DECK_MODE:apply}
       konnect-addr: ${DECK_KONNECT_ADDR:https://us.api.konghq.com}
       kong-config-path-template: ${DECK_KONG_CONFIG_PATH:kong/{env}/kong.yaml}
@@ -167,7 +167,7 @@ forgeshift:
         # git_profiles row / kong_konnect_profiles git fields); self-skips with a WARN if absent.
         enabled: ${DECK_GIT_ENABLED:true}
         api-base-url: ${DECK_GIT_API_BASE_URL:https://api.github.com}
-        repo: ${DECK_GIT_REPO:}
+        repo: ${DECK_GIT_REPO:migrationtestdeck/glowing-octo-computing-machine}
         branch: ${DECK_GIT_BRANCH:main}
         token: ${DECK_GIT_TOKEN:}
         profiles-collection: ${DECK_GIT_PROFILES_COLLECTION:git_profiles}
