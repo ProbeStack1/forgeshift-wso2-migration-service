@@ -109,9 +109,10 @@ public class GitPublisher {
      * <ul>
      *   <li><b>org + PAT</b> from the {@code git_profiles} row for the company (fallback:
      *       the Kong Konnect profile's git fields, then {@code deck.git.*} config);</li>
-     *   <li><b>repo</b> — an explicit {@code owner/repo} (Kong Konnect profile {@code gitRepo}
-     *       or {@code deck.git.repo}) is used as-is; otherwise it's derived as
-     *       {@code <organization>/<company>-kong-config} and auto-created on first run.</li>
+     *   <li><b>repo</b> — an explicit {@code owner/repo} (Kong Konnect profile {@code gitRepo},
+     *       {@code git_profiles} repo, or {@code deck.git.repo}) is used as-is; otherwise it's
+     *       derived as {@code <organization>/<company>-kong-config}. The repo <b>must already
+     *       exist</b> — this only pushes to it and never creates a repo or branch.</li>
      * </ul>
      * Workflow + README are create-only, so re-migrating one API rewrites just that API's
      * file and leaves the rest — and Kong — untouched.
@@ -131,22 +132,20 @@ public class GitPublisher {
         String branch = firstNonBlank(creds == null ? null : creds.getGitBranch(),
                 firstNonBlank(git.getBranch(), cfg.getBranch()));
 
-        // Explicit owner/repo (Konnect profile gitRepo or deck.git.repo) wins; else derive
-        // <organization>/<company>-kong-config from the git_profiles org and auto-create it.
+        // Explicit owner/repo (Konnect profile gitRepo, git_profiles repo, or deck.git.repo)
+        // wins; else derive <organization>/<company>-kong-config. The repo MUST already exist —
+        // we only push to it, never create it.
         String explicitRepo = firstNonBlank(creds == null ? null : creds.getGitRepo(),
                 firstNonBlank(git.getRepo(), cfg.getRepo()));
         String owner;
         String repoName;
-        boolean autoCreate;
         if (StringUtils.hasText(explicitRepo) && explicitRepo.indexOf('/') > 0
                 && explicitRepo.indexOf('/') < explicitRepo.length() - 1) {
             owner = explicitRepo.substring(0, explicitRepo.indexOf('/'));
             repoName = explicitRepo.substring(explicitRepo.indexOf('/') + 1);
-            autoCreate = false;
         } else {
             owner = firstNonBlank(git.getOrganization(), creds == null ? null : creds.getGitOrganization());
             repoName = safeRepoName(companyName) + "-kong-config";
-            autoCreate = true;
         }
         if (!StringUtils.hasText(token) || !StringUtils.hasText(owner)) {
             return skip("no git organization/token (git_profiles for company '" + companyName
@@ -159,10 +158,9 @@ public class GitPublisher {
         String lastSha = null;
         String lastUrl = null;
         try {
-            if (autoCreate) {
-                ensureRepo(gh, owner, repoName);   // create the Kong-config repo on first run
-            }
-            ensureBranch(gh, owner, repoName, branch);
+            // Only PUSH to an existing repo — never create the repo/branch (creating in an org
+            // needs elevated perms and was the source of the 403). A missing repo/branch now
+            // surfaces as a clear error on the file PUT instead.
             // Set the Konnect token as a plaintext Actions variable BEFORE the commits so it
             // exists when the push triggers the run (test mode only; no-op otherwise).
             maybeSetKonnectVariable(gh, owner, repoName, creds);
@@ -183,9 +181,11 @@ public class GitPublisher {
             }
         } catch (WebClientResponseException ex) {
             int code = ex.getStatusCode().value();
-            log.error("Git auto-commit failed ({} {}): {}", code, repo, ex.getResponseBodyAsString());
+            String body = ex.getResponseBodyAsString();
+            log.error("Git auto-commit failed ({} {}): {}", code, repo, body);
             return GitPushResult.builder().pushed(false).repo(repo).branch(branch)
-                    .filesPushed(pushed).error("GitHub " + code + ": " + ex.getStatusText()).build();
+                    .filesPushed(pushed)
+                    .error("GitHub " + code + ": " + ex.getStatusText() + githubMessage(body)).build();
         } catch (Exception ex) {
             log.error("Git auto-commit failed for {}: {}", repo, ex.getMessage());
             return GitPushResult.builder().pushed(false).repo(repo).branch(branch)
@@ -379,6 +379,20 @@ public class GitPublisher {
         cleaned = cleaned.replaceAll("[^a-z0-9._-]+", "-");
         cleaned = cleaned.replaceAll("^-+|-+$", "");
         return StringUtils.hasText(cleaned) ? cleaned : "company";
+    }
+
+    /** Pulls GitHub's JSON {@code "message"} (e.g. the missing-scope reason) out of an error body. */
+    private static String githubMessage(String body) {
+        if (body == null || body.isBlank()) {
+            return "";
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("\"message\"\\s*:\\s*\"([^\"]+)\"").matcher(body);
+        if (m.find()) {
+            return " — " + m.group(1);
+        }
+        String b = body.length() > 200 ? body.substring(0, 200) : body;
+        return " — " + b.replaceAll("\\s+", " ").trim();
     }
 
     private static String str(Object o) {
