@@ -167,7 +167,7 @@ public class ApiTranslator {
                 String tier = str(op.get("throttlingPolicy"));
                 if (!StringUtils.hasText(verb) || !StringUtils.hasText(target)) continue;
 
-                String path = joinPaths(context, normalizeTemplate(target));
+                String path = kongRoutePath(joinPaths(context, normalizeTemplate(target)));
                 String routeName = safeName + "--" + verb.toLowerCase() + slug(target);
                 KongRoute r = KongRoute.builder()
                         .name(routeName)
@@ -432,9 +432,46 @@ public class ApiTranslator {
         return a + b;
     }
 
-    /** Kong path style: leave {var} placeholders alone (Kong supports them in 3.x). */
+    /** Kong path style: ensure a leading slash before joining with the API context. */
     private static String normalizeTemplate(String uriTemplate) {
         return uriTemplate.startsWith("/") ? uriTemplate : "/" + uriTemplate;
+    }
+
+    /**
+     * Kong Gateway 3.x route paths do not accept WSO2/OpenAPI template segments
+     * like {@code /items/{id}} as plain paths. Convert templated paths to regex
+     * paths with the required {@code ~} prefix while leaving ordinary prefix
+     * routes unchanged.
+     */
+    private static String kongRoutePath(String path) {
+        if (!StringUtils.hasText(path) || !path.contains("{")) {
+            return path;
+        }
+        StringBuilder out = new StringBuilder("~^");
+        int i = 0;
+        while (i < path.length()) {
+            char ch = path.charAt(i);
+            if (ch == '{') {
+                int end = path.indexOf('}', i + 1);
+                if (end > i + 1) {
+                    String rawName = path.substring(i + 1, end);
+                    String name = rawName.replaceAll("[^A-Za-z0-9_]", "_");
+                    if (name.isBlank() || Character.isDigit(name.charAt(0))) {
+                        name = "param_" + name;
+                    }
+                    out.append("(?<").append(name).append(">[^/]+)");
+                    i = end + 1;
+                    continue;
+                }
+            }
+            if ("\\.[]{}()+-*?^$|".indexOf(ch) >= 0) {
+                out.append('\\');
+            }
+            out.append(ch);
+            i++;
+        }
+        out.append('$');
+        return out.toString();
     }
 
     @SuppressWarnings("unchecked")
