@@ -15,4 +15,8 @@ public interface EntityMappingRepository extends MongoRepository<EntityMapping, 
 
     List<EntityMapping> findByCompanyNameAndWso2TenantAndKongEntityType(
             String companyName, String wso2Tenant, String kongEntityType);
+
+    /** All mappings for a set of WSO2 source ids — the DB half of the "already migrated?" check. */
+    List<EntityMapping> findByCompanyNameAndWso2TenantAndWso2SourceIdIn(
+            String companyName, String wso2Tenant, java.util.Collection<String> wso2SourceIds);
 }

@@ -87,4 +87,15 @@ public class StartMigrationRequest {
 
     @Schema(description = "Audit-only: who initiated this migration.")
     private String userEmail;
+
+    @Schema(description = "When true, auto-include the selected resources' dependencies — e.g. migrating an API " +
+            "also brings the apps/consumers that subscribe to it, their subscriptions, and the API products it " +
+            "belongs to — resolved from the assessment dependency graph. Anything already present in Kong is skipped.",
+            defaultValue = "false")
+    private boolean includeDependencies;
+
+    @Schema(description = "Assessment requestTransactionId whose saved dependency graph " +
+            "(wso2_assessment_resource_info.resourceDependencies) is used to resolve dependencies. " +
+            "Required when includeDependencies=true.")
+    private String assessmentTransactionId;
 }

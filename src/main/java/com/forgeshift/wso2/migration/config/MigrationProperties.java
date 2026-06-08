@@ -29,6 +29,18 @@ public class MigrationProperties {
     private Wso2 wso2 = new Wso2();
     private BundleDownload bundleDownload = new BundleDownload();
     private Deck deck = new Deck();
+    private Dependency dependency = new Dependency();
+
+    /** Dependency-aware migration: auto-include dependencies + skip what's already in Kong. */
+    @Data
+    public static class Dependency {
+        /** Master switch; when false the includeDependencies request flag is ignored. */
+        private boolean enabled = true;
+        /** Collection (owned by the assessment service) holding resourceDependencies per assessment run. */
+        private String assessmentResourceInfoCollection = "wso2_assessment_resource_info";
+        /** When true, drop resources already present in Kong (by wso2-source-id tag) from the run. */
+        private boolean excludeAlreadyMigrated = true;
+    }
 
     @Data
     public static class Translation {

@@ -75,6 +75,7 @@ public class MigrationService {
     private final Wso2BundleClient wso2BundleClient;
     private final KongDeployer deployer;
     private final DeckBundleDeployer deckBundleDeployer;
+    private final DependencyExpander dependencyExpander;
     private final MigrationProperties props;
     @Qualifier("migrationExecutor")
     private final TaskExecutor migrationExecutor;
@@ -158,6 +159,15 @@ public class MigrationService {
             jobRepository.save(job);
 
             Map<String, List<DiscoverySnapshot>> byType = loadSnapshots(job, req);
+
+            // ----- DEPENDENCY EXPANSION (opt-in) -----
+            // When includeDependencies=true, auto-pull each selected resource's dependencies
+            // from the assessment graph (by assessmentTransactionId) and drop anything already
+            // present in Kong. Mutates byType in place, then the normal flow translates the rest.
+            if (req.isIncludeDependencies() && StringUtils.hasText(req.getAssessmentTransactionId())) {
+                byType = dependencyExpander.expand(job, req, creds, byType);
+                jobRepository.save(job);
+            }
 
             // ----- DOWNLOADING BUNDLES -----
             // Pull each API's full export ZIP from WSO2 so the translator has

@@ -381,6 +381,63 @@ public class KonnectAdminClient {
                 .block();
     }
 
+    /**
+     * Read-only "what's already in Kong?" probe. Lists every migrated SERVICE and CONSUMER
+     * (filtered by the {@code migrated-by} tag, paginated) and returns the set of WSO2 source
+     * ids recorded in their {@code wso2-source-id:<id>} tags. The dependency-aware migration
+     * uses this as the authoritative half of the skip decision (Kong present → skip).
+     */
+    public java.util.Set<String> collectMigratedSourceIds(KongKonnectCredentials creds) {
+        java.util.Set<String> ids = new java.util.HashSet<>();
+        if (creds == null || !StringUtils.hasText(creds.getKonnectAccessToken())
+                || !StringUtils.hasText(creds.getControlPlaneId())) {
+            return ids;
+        }
+        for (KongEntityType type : List.of(KongEntityType.SERVICE, KongEntityType.CONSUMER)) {
+            try {
+                collectTaggedSourceIds(creds, entityPath(creds, type, null), ids);
+            } catch (Exception e) {
+                log.warn("Kong presence scan failed for {}: {}", type, e.getMessage());
+            }
+        }
+        return ids;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void collectTaggedSourceIds(KongKonnectCredentials creds, String endpoint, java.util.Set<String> out) {
+        String migratedBy = props.getTranslation().getMigratedByTag();
+        String prefix = props.getTranslation().getTagPrefix() + ":";
+        String url = endpoint + "?tags=" + migratedBy + "&size=1000";
+        int guard = 0;
+        while (url != null && guard++ < 50) {
+            Map<String, Object> body = webClient.get()
+                    .uri(url)
+                    .header("Authorization", "Bearer " + creds.getKonnectAccessToken())
+                    .accept(MediaType.APPLICATION_JSON)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .timeout(Duration.ofSeconds(props.getKonnect().getRequestTimeoutSeconds()))
+                    .block();
+            if (body == null) return;
+            if (body.get("data") instanceof List<?> items) {
+                for (Object item : items) {
+                    if (item instanceof Map<?, ?> m && m.get("tags") instanceof List<?> tags) {
+                        for (Object tag : tags) {
+                            if (tag != null && tag.toString().startsWith(prefix)) {
+                                out.add(tag.toString().substring(prefix.length()));
+                            }
+                        }
+                    }
+                }
+            }
+            // Konnect returns a non-blank `offset` while more pages remain.
+            Object offset = body.get("offset");
+            url = (offset instanceof String s && !s.isBlank())
+                    ? endpoint + "?tags=" + migratedBy + "&size=1000&offset=" + s
+                    : null;
+        }
+    }
+
     private String entityPath(KongKonnectCredentials creds, KongEntityType type, String parentUuid) {
         String base = trimTrailingSlash(creds.getKonnectBaseUrl())
                 + "/v2/control-planes/" + creds.getControlPlaneId() + "/core-entities";

@@ -223,6 +223,8 @@ public class MigrationController {
         internal.setDiscoveryId(src.getDiscoveryId());
         internal.setRevision(src.getRevision());
         internal.setDryRun(src.isDryRun());
+        internal.setIncludeDependencies(src.isIncludeDependencies());
+        internal.setAssessmentTransactionId(src.getAssessmentTransactionId());
         return internal;
     }
 

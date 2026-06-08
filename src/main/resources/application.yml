@@ -132,6 +132,14 @@ forgeshift:
       temp-dir: ${BUNDLE_TEMP_DIR:${java.io.tmpdir}/wso2-migration-bundles}
       cleanup-after-migration: ${BUNDLE_CLEANUP:true}
 
+    # Dependency-aware migration. When a request sets includeDependencies=true (+ an
+    # assessmentTransactionId), the migrator pulls each selected resource's dependencies
+    # from the assessment graph and skips anything already present in Kong.
+    dependency:
+      enabled: ${DEPENDENCY_ENABLED:true}
+      assessment-resource-info-collection: ${ASSESSMENT_RESOURCE_INFO_COLLECTION:wso2_assessment_resource_info}
+      exclude-already-migrated: ${DEPENDENCY_EXCLUDE_ALREADY_MIGRATED:true}
+
     # decK bundle delivery — when enabled, migrations produce a kong.yaml bundle
     # (committed to git → pipeline runs `deck gateway apply`) instead of calling
     # the Konnect REST API directly.

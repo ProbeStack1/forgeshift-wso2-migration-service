@@ -98,6 +98,14 @@ public abstract class Wso2BaseMigrationRequest {
     @Schema(description = "Translate + diff only, no Konnect writes")
     private boolean dryRun;
 
+    @Schema(description = "When true, auto-include the selected resources' dependencies and skip " +
+            "anything already present in Kong. Requires assessmentTransactionId.")
+    private boolean includeDependencies;
+
+    @Schema(description = "Assessment requestTransactionId whose saved dependency graph is used to " +
+            "resolve dependencies. Required when includeDependencies=true.")
+    private String assessmentTransactionId;
+
     /** Mirrors {@code com.probestack.apigee.migration.model.BaseRequest.RequestSourceEnum}. */
     public enum RequestSourceEnum {
         UI, API, SCHEDULER, MIGRATION_TOOL
