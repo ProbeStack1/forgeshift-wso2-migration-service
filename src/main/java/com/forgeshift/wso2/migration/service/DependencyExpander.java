@@ -2,6 +2,7 @@ package com.forgeshift.wso2.migration.service;
 
 import com.forgeshift.wso2.migration.config.MigrationProperties;
 import com.forgeshift.wso2.migration.domain.MigrationJob;
+import com.forgeshift.wso2.migration.domain.MigrationReport;
 import com.forgeshift.wso2.migration.dto.StartMigrationRequest;
 import com.forgeshift.wso2.migration.reader.AssessmentDependencyReader;
 import com.forgeshift.wso2.migration.reader.DiscoverySnapshot;
@@ -13,23 +14,25 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * Dependency-aware migration. Given the SELECTED discovery snapshots, it:
  * <ol>
  *   <li>loads the assessment dependency graph for the run (by {@code assessmentTransactionId}),</li>
  *   <li>resolves each selected resource's dependencies (API → subscriptions + consuming apps + products),</li>
- *   <li>loads those dependency snapshots and merges them in, and</li>
- *   <li>drops anything already present in Kong (Kong‑authoritative, see {@link KongPresenceChecker}).</li>
+ *   <li>loads those dependency snapshots and merges them in,</li>
+ *   <li>drops anything already present in Kong (Kong-authoritative, see {@link KongPresenceChecker}), and</li>
+ *   <li>builds a structured tree (each selected resource + its dependencies, BY NAME, each flagged
+ *       if it was already in Kong) for the migration report.</li>
  * </ol>
- * It mutates and returns {@code byType} so the normal translate flow picks up the extra resources.
+ * Mutates and returns {@code byType} so the normal translate flow picks up the extra resources.
  */
 @Slf4j
 @Service
@@ -44,40 +47,66 @@ public class DependencyExpander {
     private final DiscoverySnapshotReader snapshotReader;
     private final MigrationProperties props;
 
-    public Map<String, List<DiscoverySnapshot>> expand(MigrationJob job, StartMigrationRequest req,
-                                                       KongKonnectCredentials creds,
-                                                       Map<String, List<DiscoverySnapshot>> byType) {
+    private record Root(String type, DiscoverySnapshot snap) {}
+
+    /** Result of expansion: snapshots to migrate, "skipped" report warnings, and the structured tree. */
+    public record ExpansionResult(Map<String, List<DiscoverySnapshot>> byType,
+                                  List<MigrationReport.Warning> skipped,
+                                  List<MigrationReport.DependencyMigration> tree) {}
+
+    public ExpansionResult expand(MigrationJob job, StartMigrationRequest req,
+                                  KongKonnectCredentials creds,
+                                  Map<String, List<DiscoverySnapshot>> byType) {
         if (!props.getDependency().isEnabled()) {
             log.info("[dependency] disabled by config — skipping expansion for job {}", job.getId());
-            return byType;
+            return new ExpansionResult(byType, List.of(), List.of());
         }
-        // job.resourceTypes may be immutable — make it mutable before we add dependency types.
         job.setResourceTypes(new ArrayList<>(job.getResourceTypes()));
 
-        // 1) the saved dependency graph for THIS assessment run
+        // Capture the original selection (the roots) before we mutate byType.
+        List<Root> roots = new ArrayList<>();
+        byType.forEach((type, list) -> list.forEach(s -> roots.add(new Root(type, s))));
+
         Map<String, Map<String, List<String>>> graph = dependencyReader.readGraph(req.getAssessmentTransactionId());
 
-        // 2) resolve direct dependency ids from the graph (+ subscription payloads)
-        Map<String, Set<String>> deps = dependencyResolver.resolveDirect(byType, graph);
+        // 1) resolve each root's DIRECT deps separately so we can attribute them per root.
+        Map<String, Map<String, Set<String>>> rootDirect = new LinkedHashMap<>();   // rootId -> type -> dep ids
+        Map<String, Set<String>> aggregate = new LinkedHashMap<>();                 // type -> all dep ids
+        for (Root root : roots) {
+            Map<String, Set<String>> d = dependencyResolver.resolveDirect(
+                    Map.of(root.type(), List.of(root.snap())), graph);
+            rootDirect.put(root.snap().getSourceId(), d);
+            d.forEach((t, ids) -> aggregate.computeIfAbsent(t, k -> new LinkedHashSet<>()).addAll(ids));
+        }
 
-        // 3) load subscription snapshots first; derive the consuming apps from their applicationId
-        Set<String> subIds = deps.getOrDefault("subscriptions", new LinkedHashSet<>());
+        // 2) load subscription snapshots; derive the consuming apps and attribute them back to each root.
+        Set<String> subIds = aggregate.getOrDefault("subscriptions", new LinkedHashSet<>());
         if (!subIds.isEmpty()) {
             List<DiscoverySnapshot> subs = loadFiltered(req, "subscriptions", subIds);
             merge(byType, "subscriptions", subs);
-            Set<String> appIds = deps.computeIfAbsent("applications", k -> new LinkedHashSet<>());
+            Map<String, String> subToApp = new HashMap<>();
             for (DiscoverySnapshot s : subs) {
-                String appId = payload(s, "applicationId");
-                if (StringUtils.hasText(appId)) appIds.add(appId);
+                String app = payload(s, "applicationId");
+                if (StringUtils.hasText(app)) {
+                    subToApp.put(s.getSourceId(), app);
+                    aggregate.computeIfAbsent("applications", k -> new LinkedHashSet<>()).add(app);
+                }
+            }
+            for (Map<String, Set<String>> d : rootDirect.values()) {
+                Set<String> rootApps = d.computeIfAbsent("applications", k -> new LinkedHashSet<>());
+                for (String sub : d.getOrDefault("subscriptions", Set.of())) {
+                    String app = subToApp.get(sub);
+                    if (app != null) rootApps.add(app);
+                }
             }
         }
 
-        // 4) load the remaining dependency types
-        loadAndMerge(req, byType, "applications", deps.get("applications"));
-        loadAndMerge(req, byType, "apiproducts", deps.get("apiproducts"));
-        loadAndMerge(req, byType, "apis", deps.get("apis"));
+        // 3) load the remaining dependency types
+        loadAndMerge(req, byType, "applications", aggregate.get("applications"));
+        loadAndMerge(req, byType, "apiproducts", aggregate.get("apiproducts"));
+        loadAndMerge(req, byType, "apis", aggregate.get("apis"));
 
-        // make sure newly-added types are part of the job (iteration + reporting)
+        // newly-added types become part of the job (iteration + reporting)
         for (String t : DEP_TYPES) {
             List<DiscoverySnapshot> snaps = byType.get(t);
             if (snaps != null && !snaps.isEmpty() && !job.getResourceTypes().contains(t)) {
@@ -85,27 +114,64 @@ public class DependencyExpander {
             }
         }
 
-        // 5) skip anything already in Kong (across ALL types: original selection + dependencies)
+        // 4) skip anything already in Kong (selection + dependencies), recording each skip.
+        Set<String> skippedIds = new HashSet<>();
+        List<MigrationReport.Warning> skippedWarnings = new ArrayList<>();
         if (props.getDependency().isExcludeAlreadyMigrated()) {
             Set<String> all = new LinkedHashSet<>();
             byType.values().forEach(list -> list.forEach(s -> all.add(s.getSourceId())));
             Set<String> skip = presenceChecker.alreadyInKong(creds, req.getCompanyName(), req.getWso2Tenant(), all);
             if (!skip.isEmpty()) {
-                int[] removed = {0};
                 byType.replaceAll((type, list) -> {
-                    int before = list.size();
-                    List<DiscoverySnapshot> kept = list.stream()
-                            .filter(s -> !skip.contains(s.getSourceId()))
-                            .collect(Collectors.toList());
-                    removed[0] += before - kept.size();
+                    List<DiscoverySnapshot> kept = new ArrayList<>();
+                    for (DiscoverySnapshot s : list) {
+                        if (skip.contains(s.getSourceId())) {
+                            skippedIds.add(s.getSourceId());
+                            skippedWarnings.add(MigrationReport.Warning.builder()
+                                    .resourceType(type).wso2SourceId(s.getSourceId()).wso2SourceName(s.getSourceName())
+                                    .code("SKIPPED_ALREADY_IN_KONG")
+                                    .message("Already present in Kong (matched by wso2-source-id tag) — not re-migrated.")
+                                    .build());
+                        } else {
+                            kept.add(s);
+                        }
+                    }
                     return kept;
                 });
-                log.info("[dependency] skipped {} resource(s) already present in Kong for job {}", removed[0], job.getId());
+                log.info("[dependency] skipped {} resource(s) already present in Kong for job {}",
+                        skippedIds.size(), job.getId());
             }
         }
 
-        log.info("[dependency] expansion done for job {} — final counts {}", job.getId(), countMap(byType));
-        return byType;
+        // 5) build the structured tree (root + its deps, by name)
+        Map<String, String> names = new HashMap<>();
+        byType.forEach((t, list) -> list.forEach(s -> names.put(s.getSourceId(), s.getSourceName())));
+        skippedWarnings.forEach(w -> names.put(w.getWso2SourceId(), w.getWso2SourceName()));
+        roots.forEach(r -> names.putIfAbsent(r.snap().getSourceId(), r.snap().getSourceName()));
+
+        List<MigrationReport.DependencyMigration> tree = new ArrayList<>();
+        for (Root root : roots) {
+            List<MigrationReport.DependencyMigration.Dep> deps = new ArrayList<>();
+            rootDirect.getOrDefault(root.snap().getSourceId(), Map.of()).forEach((depType, ids) -> {
+                for (String id : ids) {
+                    deps.add(MigrationReport.DependencyMigration.Dep.builder()
+                            .resourceType(depType).wso2SourceId(id)
+                            .name(names.getOrDefault(id, id))
+                            .alreadyInKong(skippedIds.contains(id))
+                            .build());
+                }
+            });
+            tree.add(MigrationReport.DependencyMigration.builder()
+                    .resourceType(root.type()).wso2SourceId(root.snap().getSourceId())
+                    .name(root.snap().getSourceName())
+                    .alreadyInKong(skippedIds.contains(root.snap().getSourceId()))
+                    .dependencies(deps)
+                    .build());
+        }
+
+        log.info("[dependency] expansion done for job {} — final counts {}, skipped {}, roots {}",
+                job.getId(), countMap(byType), skippedIds.size(), tree.size());
+        return new ExpansionResult(byType, skippedWarnings, tree);
     }
 
     private void loadAndMerge(StartMigrationRequest req, Map<String, List<DiscoverySnapshot>> byType,
@@ -114,7 +180,6 @@ public class DependencyExpander {
         merge(byType, type, loadFiltered(req, type, ids));
     }
 
-    /** Load every snapshot of {@code type} (by discoveryId or latest revision) and keep only the wanted ids. */
     private List<DiscoverySnapshot> loadFiltered(StartMigrationRequest req, String type, Set<String> wantedIds) {
         List<DiscoverySnapshot> all = StringUtils.hasText(req.getDiscoveryId())
                 ? snapshotReader.findByDiscoveryId(req.getCompanyName(), req.getWso2Tenant(), type, req.getDiscoveryId())
@@ -127,7 +192,6 @@ public class DependencyExpander {
         return out;
     }
 
-    /** Merge new snapshots into byType, de-duplicating by sourceId; tolerant of immutable values. */
     private void merge(Map<String, List<DiscoverySnapshot>> byType, String type, List<DiscoverySnapshot> add) {
         if (add.isEmpty()) return;
         List<DiscoverySnapshot> existing = new ArrayList<>(byType.getOrDefault(type, List.of()));

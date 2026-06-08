@@ -42,6 +42,10 @@ public class MigrationJob {
     /** Resource types in scope for this run (apis, applications, subscriptions, throttlingpolicies, keymanagers). */
     private List<String> resourceTypes;
 
+    /** Transient (not persisted): dependency-migration tree from DependencyExpander, copied into the MigrationReport. */
+    @org.springframework.data.annotation.Transient
+    private List<MigrationReport.DependencyMigration> dependencyMigrations;
+
     /** Dry-run = translate + diff only, no Konnect writes. */
     private boolean dryRun;
 

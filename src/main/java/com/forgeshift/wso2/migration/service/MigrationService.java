@@ -164,8 +164,14 @@ public class MigrationService {
             // When includeDependencies=true, auto-pull each selected resource's dependencies
             // from the assessment graph (by assessmentTransactionId) and drop anything already
             // present in Kong. Mutates byType in place, then the normal flow translates the rest.
+            // Resources skipped because they're already in Kong come back as report warnings
+            // (code SKIPPED_ALREADY_IN_KONG) so the response shows exactly what was NOT re-migrated.
+            List<MigrationReport.Warning> dependencyWarnings = new ArrayList<>();
             if (req.isIncludeDependencies() && StringUtils.hasText(req.getAssessmentTransactionId())) {
-                byType = dependencyExpander.expand(job, req, creds, byType);
+                DependencyExpander.ExpansionResult ex = dependencyExpander.expand(job, req, creds, byType);
+                byType = ex.byType();
+                dependencyWarnings = ex.skipped();
+                job.setDependencyMigrations(ex.tree());
                 jobRepository.save(job);
             }
 
@@ -184,7 +190,8 @@ public class MigrationService {
                     bundleDownloadService.download(wso2Creds, apiSnapshots);
 
             // Warnings for every failed bundle so they show up in the report.
-            List<MigrationReport.Warning> warnings = new ArrayList<>();
+            // Seeded with any "skipped because already in Kong" warnings from dependency expansion.
+            List<MigrationReport.Warning> warnings = new ArrayList<>(dependencyWarnings);
             for (DiscoverySnapshot s : apiSnapshots) {
                 String fail = bundleResult.failures.get(s.getSourceId());
                 if (fail != null) {
@@ -829,6 +836,7 @@ public class MigrationService {
                 .gitCommitUrl(bundle != null ? bundle.getGitCommitUrl() : null)
                 .gitFilesPushed(bundle != null ? bundle.getGitFilesPushed() : null)
                 .gitError(bundle != null ? bundle.getGitError() : null)
+                .dependencyMigrations(job.getDependencyMigrations())
                 .generatedAt(Instant.now())
                 .build();
         reportRepository.save(report);

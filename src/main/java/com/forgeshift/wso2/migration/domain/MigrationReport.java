@@ -63,6 +63,10 @@ public class MigrationReport {
     private Integer deckApplyErrorCount;
     private List<String> deckApplyErrors;
 
+    /** Structured tree (only when includeDependencies=true): each SELECTED resource + the
+     *  dependencies pulled in for it, by name, each flagged if it was already in Kong (skipped). */
+    private List<DependencyMigration> dependencyMigrations;
+
     private Instant generatedAt;
 
     @Data
@@ -115,5 +119,29 @@ public class MigrationReport {
         private String kongServiceName;
         private List<String> routePaths;
         private List<String> plugins;
+    }
+
+    /** A SELECTED resource and the dependencies auto-pulled in for it (dependency-aware migration). */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class DependencyMigration {
+        private String resourceType;        // apis / applications / subscriptions / apiproducts / ...
+        private String wso2SourceId;
+        private String name;
+        private boolean alreadyInKong;      // true = skipped (already present in Kong)
+        private List<Dep> dependencies;     // the resources pulled in BECAUSE of this one
+
+        @Data
+        @Builder
+        @NoArgsConstructor
+        @AllArgsConstructor
+        public static class Dep {
+            private String resourceType;
+            private String wso2SourceId;
+            private String name;
+            private boolean alreadyInKong;
+        }
     }
 }
