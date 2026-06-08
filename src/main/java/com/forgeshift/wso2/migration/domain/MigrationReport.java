@@ -62,6 +62,9 @@ public class MigrationReport {
     /** decK apply outcome from the pipeline callback (POST /migrations/{id}/deck-result). */
     private Integer deckApplyErrorCount;
     private List<String> deckApplyErrors;
+    /** Full captured stderr/diagnostics from the failing pipeline step (validate or apply) — so even
+     *  non-apply failures (where deckApplyErrors is empty) have their reason queryable here. */
+    private String deckApplyStderr;
 
     /** Structured tree (only when includeDependencies=true): each SELECTED resource + the
      *  dependencies pulled in for it, by name, each flagged if it was already in Kong (skipped). */

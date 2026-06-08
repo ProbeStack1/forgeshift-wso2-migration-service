@@ -139,7 +139,12 @@ public class MigrationService {
         return s == MigrationState.COMPLETED
                 || s == MigrationState.FAILED
                 || s == MigrationState.DRY_RUN_DONE
-                || s == MigrationState.CANCELLED;
+                || s == MigrationState.CANCELLED
+                || s == MigrationState.TIMED_OUT
+                // The service's own work is done once the bundle is pushed; the deck-apply
+                // result arrives later via the callback. Let a sync call return here (as
+                // DEPLOYING_TO_KONG) instead of blocking for the whole pipeline.
+                || s == MigrationState.DEPLOYING_TO_KONG;
     }
 
     public void runMigration(String jobId, StartMigrationRequest req) {
@@ -162,12 +167,14 @@ public class MigrationService {
 
             // ----- DEPENDENCY EXPANSION (opt-in) -----
             // When includeDependencies=true, auto-pull each selected resource's dependencies
-            // from the assessment graph (by assessmentTransactionId) and drop anything already
-            // present in Kong. Mutates byType in place, then the normal flow translates the rest.
-            // Resources skipped because they're already in Kong come back as report warnings
-            // (code SKIPPED_ALREADY_IN_KONG) so the response shows exactly what was NOT re-migrated.
+            // from the assessment graph and drop anything already present in Kong. Mutates byType
+            // in place, then the normal flow translates the rest. Resources skipped because they're
+            // already in Kong come back as report warnings (code SKIPPED_ALREADY_IN_KONG) so the
+            // response shows exactly what was NOT re-migrated.
+            // The graph is read by assessmentTransactionId, OR — when that's blank — the migration's
+            // own requestTransactionId (both match the assessment doc's requestTransactionId field).
             List<MigrationReport.Warning> dependencyWarnings = new ArrayList<>();
-            if (req.isIncludeDependencies() && StringUtils.hasText(req.getAssessmentTransactionId())) {
+            if (req.isIncludeDependencies() && StringUtils.hasText(DependencyExpander.effectiveAssessmentTxn(req))) {
                 DependencyExpander.ExpansionResult ex = dependencyExpander.expand(job, req, creds, byType);
                 byType = ex.byType();
                 dependencyWarnings = ex.skipped();
@@ -462,11 +469,25 @@ public class MigrationService {
                         new ResourceCounters(0, 0, 0, 0, scopeSnapshots.size(), List.of()),
                         bundle);
                 job.getCounts().setTotalDeployed(job.getCounts().getTotalTranslated());
-                job.setState(MigrationState.COMPLETED);
-                job.setCompletedAt(Instant.now());
-                jobRepository.save(job);
-                log.info("Migration job {} COMPLETED (decK bundle): {} -> {}",
-                        job.getId(), bundle.getKongConfigPath(), bundle.getDownloadUrl());
+                // If the bundle was pushed to git AND we have a callback URL, the GitHub Actions
+                // pipeline will run `deck gateway apply` and POST the result back to
+                // /migrations/{id}/deck-result. Don't claim COMPLETED yet — wait for that result.
+                boolean awaitPipeline = StringUtils.hasText(bundle.getGitCommitSha())
+                        && StringUtils.hasText(props.getDeck().getCallbackBaseUrl());
+                if (awaitPipeline) {
+                    job.setState(MigrationState.DEPLOYING_TO_KONG);
+                    jobRepository.save(job);
+                    log.info("Migration job {} DEPLOYING_TO_KONG — bundle pushed (sha {}), awaiting deck-apply callback",
+                            job.getId(), bundle.getGitCommitSha());
+                } else {
+                    // No pipeline to wait for (git push didn't happen / no callback configured) —
+                    // the bundle itself is the deliverable.
+                    job.setState(MigrationState.COMPLETED);
+                    job.setCompletedAt(Instant.now());
+                    jobRepository.save(job);
+                    log.info("Migration job {} COMPLETED (decK bundle, no pipeline callback): {} -> {}",
+                            job.getId(), bundle.getKongConfigPath(), bundle.getDownloadUrl());
+                }
                 return;
             }
 

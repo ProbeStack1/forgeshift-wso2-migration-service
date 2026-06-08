@@ -310,8 +310,33 @@ public class MigrationController {
         reportRepository.findByMigrationJobId(id).ifPresent(report -> {
             report.setDeckApplyErrorCount(summary.getErrors());
             report.setDeckApplyErrors(summary.getFailedDetails());
+            report.setDeckApplyStderr(body.getApplyStderr());   // full reason for validate/other failures
             reportRepository.save(report);
         });
+        // The pipeline's apply result is the source of truth — flip the job to its FINAL state.
+        // (The migration parked it in DEPLOYING_TO_KONG after pushing the bundle; this is where
+        // it becomes COMPLETED or FAILED. The pipeline must POST this even on failure — i.e. the
+        // callback step runs with `if: always()`.)
+        // Failed if decK reported errors[] OR the apply step exited non-zero (a hard failure such
+        // as bad auth can leave applyReport empty, so the exit code is the reliable signal).
+        boolean nonZeroExit = body.getApplyExitCode() != null && body.getApplyExitCode() != 0;
+        boolean failed = summary.getErrors() > 0 || nonZeroExit;
+        job.setState(failed ? MigrationState.FAILED : MigrationState.COMPLETED);
+        job.setCompletedAt(java.time.Instant.now());
+        if (failed) {
+            java.util.List<String> d = summary.getFailedDetails();
+            String detail = !d.isEmpty()
+                    ? String.join("; ", d.subList(0, Math.min(3, d.size())))
+                    : (StringUtils.hasText(body.getApplyStderr())
+                        ? body.getApplyStderr().substring(0, Math.min(300, body.getApplyStderr().length()))
+                        : "deck gateway apply exited " + body.getApplyExitCode());
+            job.setLastError("decK apply failed: " + detail);
+        } else {
+            job.setLastError(null);
+        }
+        jobRepository.save(job);
+        log.info("Migration job {} → {} via deck-result callback ({} apply error(s))",
+                job.getId(), job.getState(), summary.getErrors());
         return ResponseEntity.ok(summary);
     }
 

@@ -43,6 +43,7 @@ public class AssessmentDependencyReader {
                 Query.query(Criteria.where("requestTransactionId").is(requestTransactionId)),
                 Document.class, collection);
 
+        int legacyStringRefs = 0;   // refs stored as bare names (old format, no id) — unmigratable
         for (Document doc : docs) {
             if (!(doc.get("resourceDependencies") instanceof Document depDoc)) continue;
             for (String resourceName : depDoc.keySet()) {
@@ -53,12 +54,25 @@ public class AssessmentDependencyReader {
                     List<String> ids = byRel.computeIfAbsent(relType, k -> new ArrayList<>());
                     for (Object ref : refs) {
                         if (ref instanceof Document r && r.get("id") != null) {
+                            // current format: { id, name } — id is the WSO2 source id we migrate by.
                             String id = r.get("id").toString();
                             if (!ids.contains(id)) ids.add(id);
+                        } else if (ref instanceof String) {
+                            // legacy format: bare name string (no id) — can't be auto-migrated.
+                            legacyStringRefs++;
                         }
                     }
                 }
             }
+        }
+        if (docs.isEmpty()) {
+            log.warn("[dependency] no assessment doc found for txn {} in {} — no dependencies will be "
+                    + "pulled in. Pass the requestTransactionId of an actual assessment run.",
+                    requestTransactionId, collection);
+        } else if (legacyStringRefs > 0) {
+            log.warn("[dependency] assessment doc for txn {} stores {} dependency ref(s) in the LEGACY "
+                    + "name-only format (no ids) — these cannot be auto-migrated. Re-run the assessment "
+                    + "so the graph is written as {} pairs.", requestTransactionId, legacyStringRefs, "{id,name}");
         }
         log.info("[dependency] loaded graph for txn {}: {} resource entries from {}",
                 requestTransactionId, graph.size(), collection);

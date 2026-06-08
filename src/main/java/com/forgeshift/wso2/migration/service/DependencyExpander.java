@@ -49,6 +49,19 @@ public class DependencyExpander {
 
     private record Root(String type, DiscoverySnapshot snap) {}
 
+    /**
+     * The assessment run's id used to read the dependency graph. Prefers the explicit
+     * {@code assessmentTransactionId}; falls back to the migration's own {@code requestTransactionId}
+     * for the common "one id across the whole flow" convention (assessment + migration share an id).
+     * The graph is stored under {@code requestTransactionId} in {@code wso2_assessment_resource_info},
+     * so either value is matched against the SAME DB field.
+     */
+    public static String effectiveAssessmentTxn(StartMigrationRequest req) {
+        return StringUtils.hasText(req.getAssessmentTransactionId())
+                ? req.getAssessmentTransactionId()
+                : req.getRequestTransactionId();
+    }
+
     /** Result of expansion: snapshots to migrate, "skipped" report warnings, and the structured tree. */
     public record ExpansionResult(Map<String, List<DiscoverySnapshot>> byType,
                                   List<MigrationReport.Warning> skipped,
@@ -67,7 +80,7 @@ public class DependencyExpander {
         List<Root> roots = new ArrayList<>();
         byType.forEach((type, list) -> list.forEach(s -> roots.add(new Root(type, s))));
 
-        Map<String, Map<String, List<String>>> graph = dependencyReader.readGraph(req.getAssessmentTransactionId());
+        Map<String, Map<String, List<String>>> graph = dependencyReader.readGraph(effectiveAssessmentTxn(req));
 
         // 1) resolve each root's DIRECT deps separately so we can attribute them per root.
         Map<String, Map<String, Set<String>>> rootDirect = new LinkedHashMap<>();   // rootId -> type -> dep ids

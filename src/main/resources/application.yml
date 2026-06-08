@@ -132,9 +132,11 @@ forgeshift:
       temp-dir: ${BUNDLE_TEMP_DIR:${java.io.tmpdir}/wso2-migration-bundles}
       cleanup-after-migration: ${BUNDLE_CLEANUP:true}
 
-    # Dependency-aware migration. When a request sets includeDependencies=true (+ an
-    # assessmentTransactionId), the migrator pulls each selected resource's dependencies
-    # from the assessment graph and skips anything already present in Kong.
+    # Dependency-aware migration. When a request sets includeDependencies=true, the migrator
+    # pulls each selected resource's dependencies from the assessment graph and skips anything
+    # already present in Kong. The graph is read by assessmentTransactionId when provided, else
+    # by the migration's own requestTransactionId (both match the assessment doc's
+    # requestTransactionId field, so one shared id across the flow works).
     dependency:
       enabled: ${DEPENDENCY_ENABLED:true}
       assessment-resource-info-collection: ${ASSESSMENT_RESOURCE_INFO_COLLECTION:wso2_assessment_resource_info}
@@ -160,12 +162,14 @@ forgeshift:
       konnect-token-via-variable: ${DECK_KONNECT_TOKEN_VIA_VARIABLE:true}
       control-plane-name-fallback: ${DECK_CONTROL_PLANE_NAME:}
       bundle-dir: ${DECK_BUNDLE_DIR:${java.io.tmpdir}/kong-bundles}
-      download-base-url: ${DECK_DOWNLOAD_BASE_URL:}
+      download-base-url: ${DECK_DOWNLOAD_BASE_URL:https://probestack.io/wso2/migration/v1}
       # Public base URL of this service; when set, the generated workflow POSTs the apply
       # report + dump back to {callback-base-url}/migrations/{id}/deck-result automatically.
-      # Defaults to DECK_DOWNLOAD_BASE_URL so one public service URL can power both bundle
-      # downloads and the pipeline callback.
-      callback-base-url: ${DECK_CALLBACK_BASE_URL:${DECK_DOWNLOAD_BASE_URL:}}
+      # This is what makes the job advance from DEPLOYING_TO_KONG → COMPLETED/FAILED, so it now
+      # defaults to the public staging URL (override per-env with DECK_CALLBACK_BASE_URL).
+      callback-base-url: ${DECK_CALLBACK_BASE_URL:${DECK_DOWNLOAD_BASE_URL:https://probestack.io/wso2/migration/v1}}
+      # No deck-apply callback within this many minutes → the job is marked TIMED_OUT.
+      apply-timeout-minutes: ${DECK_APPLY_TIMEOUT_MINUTES:15}
       storage: ${DECK_STORAGE:temp}
       # Auto-commit the generated files to the Kong-config repo (else just produce the bundle).
       # repo/branch/token come from the kong_konnect_profiles row when present, else from here.

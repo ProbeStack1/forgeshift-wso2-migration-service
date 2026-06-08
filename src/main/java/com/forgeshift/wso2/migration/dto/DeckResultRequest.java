@@ -20,4 +20,11 @@ public class DeckResultRequest {
 
     @Schema(description = "Output of `deck gateway apply --json-output` (changes + errors[]).")
     private Map<String, Object> applyReport;
+
+    @Schema(description = "Exit code of the `deck gateway apply` step. Non-zero = the apply failed "
+            + "(even if applyReport is empty, e.g. an auth failure). 0/absent = success.")
+    private Integer applyExitCode;
+
+    @Schema(description = "Captured stderr of the apply step (optional) — surfaced on the job's lastError when it failed.")
+    private String applyStderr;
 }
