@@ -98,6 +98,10 @@ public class ApiTranslator {
         List<String> wso2Tags = stringList(p.get("tags"));
         if (wso2Tags != null) tags.addAll(wso2Tags);
         tags.replaceAll(ApiTranslator::safeTag);   // Kong tags reject "/" and ","
+        // Kong also requires tags to be UNIQUE within an entity — de-dup (preserve order).
+        List<String> dedupedTags = new ArrayList<>(new LinkedHashSet<>(tags));
+        tags.clear();
+        tags.addAll(dedupedTags);
 
         // --- Service ----------------------------------------------------------
         KongService service = buildService(safeName, p, tags);
@@ -421,9 +425,12 @@ public class ApiTranslator {
     }
 
     private List<String> tagsWith(List<String> base, String... extras) {
-        List<String> out = new ArrayList<>(base);
+        // Kong requires tags to be UNIQUE within an entity. With one route per API, two
+        // operations can share a target (e.g. GET /posts + POST /posts) which would add the
+        // same wso2-resource:<target> tag twice — a LinkedHashSet de-dups (preserving order).
+        LinkedHashSet<String> out = new LinkedHashSet<>(base);
         for (String e : extras) if (e != null) out.add(safeTag(e));
-        return out;
+        return new ArrayList<>(out);
     }
 
     /**

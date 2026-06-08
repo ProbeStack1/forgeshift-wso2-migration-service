@@ -52,5 +52,11 @@ class ApiTranslatorTest {
         assertTrue(route.getTags().stream().noneMatch(t -> t.contains("/")), "route tags must not contain '/'");
         assertTrue(route.getTags().contains("wso2-resource:_items"));
         assertTrue(route.getTags().contains("wso2-resource:_items_{id}"));
+
+        // Kong requires UNIQUE tags within an entity. GET /items + POST /items share the
+        // target /items, so wso2-resource:_items must appear exactly once (not duplicated).
+        long distinct = route.getTags().stream().distinct().count();
+        assertEquals(route.getTags().size(), distinct, "route tags must be unique (no duplicates)");
+        assertEquals(1, route.getTags().stream().filter("wso2-resource:_items"::equals).count());
     }
 }
