@@ -140,7 +140,7 @@ forgeshift:
     dependency:
       enabled: ${DEPENDENCY_ENABLED:true}
       assessment-resource-info-collection: ${ASSESSMENT_RESOURCE_INFO_COLLECTION:wso2_assessment_resource_info}
-      exclude-already-migrated: ${DEPENDENCY_EXCLUDE_ALREADY_MIGRATED:false}
+      exclude-already-migrated: ${DEPENDENCY_EXCLUDE_ALREADY_MIGRATED:true}
 
     # decK bundle delivery — when enabled, migrations produce a kong.yaml bundle
     # (committed to git → pipeline runs `deck gateway apply`) instead of calling
