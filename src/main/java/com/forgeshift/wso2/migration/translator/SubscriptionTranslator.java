@@ -30,6 +30,7 @@ import java.util.*;
 public class SubscriptionTranslator {
 
     private final MigrationProperties props;
+    private final ThrottlingTierResolver tierResolver;
 
     public List<TranslatedConsumer> translate(List<DiscoverySnapshot> applications,
                                               List<DiscoverySnapshot> subscriptions) {
@@ -77,7 +78,7 @@ public class SubscriptionTranslator {
 
         // Application-tier rate limit (consumer-scoped, applies across every API)
         if (StringUtils.hasText(appLevelTier) && !"Unlimited".equalsIgnoreCase(appLevelTier)) {
-            Integer rpm = props.getTranslation().getThrottlingTierMap().get(appLevelTier);
+            Integer rpm = tierResolver.effectiveTierRpm(app.getCompanyName(), app.getWso2Tenant()).get(appLevelTier);
             if (rpm == null) {
                 int requestCount = parseRequestCountFromTierName(appLevelTier);
                 rpm = requestCount > 0 ? requestCount : props.getTranslation().getDefaultThrottleRpm();

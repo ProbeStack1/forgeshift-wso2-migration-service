@@ -34,6 +34,7 @@ import java.util.Map;
 public class ApiProductTranslator {
 
     private final MigrationProperties props;
+    private final ThrottlingTierResolver tierResolver;
     private static final List<String> DEFAULT_PROTOCOLS = List.of("http", "https");
     private static final List<String> ALL_CORS_METHODS = List.of(
             "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT");
@@ -56,7 +57,8 @@ public class ApiProductTranslator {
         List<String> warnings = new ArrayList<>();
 
         // Product-level plugins — ONLY the policies/security this product actually has.
-        List<KongPlugin> productPlugins = buildProductPlugins(p, baseTags);
+        List<KongPlugin> productPlugins = buildProductPlugins(p, baseTags,
+                tierResolver.effectiveTierRpm(snap.getCompanyName(), snap.getWso2Tenant()));
 
         List<TranslatedApiProduct.ProductRoute> routes = new ArrayList<>();
 
@@ -115,14 +117,14 @@ public class ApiProductTranslator {
 
     // ---------------- plugin building (same rules ApiTranslator uses for APIs) ----------------
 
-    private List<KongPlugin> buildProductPlugins(Map<String, Object> p, List<String> baseTags) {
+    private List<KongPlugin> buildProductPlugins(Map<String, Object> p, List<String> baseTags, Map<String, Integer> tierRpm) {
         List<KongPlugin> plugins = new ArrayList<>();
 
         // 1) Product throttling tier (policies array) → rate-limiting
         List<String> policies = stringList(p.get("policies"));
         if (policies != null) {
             for (String policy : policies) {
-                Integer rpm = props.getTranslation().getThrottlingTierMap().get(policy);
+                Integer rpm = tierRpm.get(policy);
                 if (rpm != null && !"Unlimited".equalsIgnoreCase(policy)) {
                     plugins.add(rateLimit(rpm, tagsWith(baseTags, "wso2-tier:" + policy)));
                     break;

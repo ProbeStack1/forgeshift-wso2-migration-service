@@ -44,6 +44,7 @@ import java.util.*;
 public class ApiTranslator {
 
     private final MigrationProperties props;
+    private final ThrottlingTierResolver tierResolver;
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final List<String> ALL_CORS_METHODS = List.of(
             "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT");
@@ -164,6 +165,9 @@ public class ApiTranslator {
         // resource templates (kept as audit tags), and the strictest per-operation
         // throttling tier (collapsed to one route-scoped rate-limit since there is now
         // a single route per API).
+        // Real per-minute limits for this tenant's tiers (discovered WSO2 policy values overlaid on
+        // the configured fallback map) — drives every rate-limiting plugin built for this API.
+        Map<String, Integer> tierRpm = tierResolver.effectiveTierRpm(snap.getCompanyName(), snap.getWso2Tenant());
         LinkedHashSet<String> methods = new LinkedHashSet<>();
         List<String> resourceTags = new ArrayList<>();
         String strictestTier = null;
@@ -176,7 +180,7 @@ public class ApiTranslator {
                 if (StringUtils.hasText(target)) resourceTags.add("wso2-resource:" + target);
                 String tier = str(op.get("throttlingPolicy"));
                 if (StringUtils.hasText(tier) && !"Unlimited".equalsIgnoreCase(tier)) {
-                    Integer rpm = props.getTranslation().getThrottlingTierMap().get(tier);
+                    Integer rpm = tierRpm.get(tier);
                     if (rpm == null) rpm = props.getTranslation().getDefaultThrottleRpm();
                     if (strictestRpm == null || rpm < strictestRpm) {
                         strictestRpm = rpm;
@@ -219,7 +223,7 @@ public class ApiTranslator {
         List<String> policies = stringList(p.get("policies"));
         if (policies != null) {
             for (String policy : policies) {
-                Integer rpm = props.getTranslation().getThrottlingTierMap().get(policy);
+                Integer rpm = tierRpm.get(policy);
                 if (rpm != null && !"Unlimited".equalsIgnoreCase(policy)) {
                     svcPlugins.add(rateLimit(rpm, tagsWith(tags, "wso2-tier:" + policy)));
                     break; // only one API-level rate-limit

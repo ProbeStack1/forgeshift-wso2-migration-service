@@ -88,7 +88,7 @@ forgeshift:
       default-timeout-ms: ${TRANSLATION_DEFAULT_TIMEOUT_MS:60000}
       tag-prefix: wso2-source-id
       migrated-by-tag: migrated-by:forgeshift-wso2-migrator
-      # Throttling tier name → requests per minute. Mirrors the Archive Python script.
+      # Throttling tier name → requests per minute. FALLBACK ONLY — real per-minute limits now come from the discovered WSO2 throttling policies (ThrottlingTierResolver); this map is used only when that discovery data is unavailable.
       throttling-tier-map:
         Bronze: 10
         Silver: 50

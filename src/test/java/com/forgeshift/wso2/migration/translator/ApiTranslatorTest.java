@@ -14,7 +14,8 @@ class ApiTranslatorTest {
 
     @Test
     void buildsOneRouteAtContextSoBackendResourcePathIsPreserved() {
-        ApiTranslator translator = new ApiTranslator(new MigrationProperties());
+        MigrationProperties props = new MigrationProperties();
+        ApiTranslator translator = new ApiTranslator(props, new ThrottlingTierResolver(null, props));
 
         DiscoverySnapshot snap = DiscoverySnapshot.builder()
                 .sourceId("api1")
