@@ -83,6 +83,6 @@ class DeckSampleGenerationTest {
             Files.createDirectories(p.getParent());
             Files.writeString(p, e.getValue(), StandardCharsets.UTF_8);
         }
-        assertTrue(files.containsKey("kong/dev/api-pizzashack-1-0-0.yaml"));
+        assertTrue(files.containsKey("kong/dev/pizzashack-1-0-0/api-pizzashack-1-0-0.yaml"));
     }
 }

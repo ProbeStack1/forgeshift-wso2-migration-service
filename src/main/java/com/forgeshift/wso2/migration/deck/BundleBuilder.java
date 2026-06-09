@@ -44,7 +44,9 @@ public class BundleBuilder {
                               String konnectAddr, String konnectAccessToken,
                               Map<String, String> kongFiles) {
         MigrationProperties.Deck d = props.getDeck();
-        String configDir = d.getKongConfigDirTemplate().replace("{env}", env);
+        // Apply path = the deepest directory that holds every generated kong file. A per-API
+        // (single-API) run lands under kong/<env>/<api>/ → apply just that; a flat run → kong/<env>.
+        String configDir = commonDir(kongFiles, d.getKongConfigDirTemplate().replace("{env}", env));
         String wfPath = workflowPath(env);
 
         // Full repo layout: the (static, dispatch-only) workflow + README FIRST, then the per-API
@@ -96,6 +98,35 @@ public class BundleBuilder {
                 .workflowFile("deploy-" + env + ".yml")
                 .callbackUrl(callbackUrl)
                 .build();
+    }
+
+    /**
+     * decK apply path for this run = the deepest directory containing every generated kong file.
+     * Flat layout ({@code kong/<env>/api-*.yaml}) → {@code kong/<env>}; a per-API single migration
+     * ({@code kong/<env>/<api>/*.yaml}) → {@code kong/<env>/<api>}. Falls back when no files exist.
+     */
+    static String commonDir(Map<String, String> kongFiles, String fallback) {
+        if (kongFiles == null || kongFiles.isEmpty()) {
+            return fallback;
+        }
+        String[] prefix = null;
+        for (String path : kongFiles.keySet()) {
+            String norm = path.replace('\\', '/');
+            int slash = norm.lastIndexOf('/');
+            String[] segs = (slash < 0 ? "" : norm.substring(0, slash)).split("/");
+            if (prefix == null) {
+                prefix = segs;
+                continue;
+            }
+            int i = 0;
+            int n = Math.min(prefix.length, segs.length);
+            while (i < n && prefix[i].equals(segs[i])) {
+                i++;
+            }
+            prefix = java.util.Arrays.copyOf(prefix, i);
+        }
+        String dir = String.join("/", prefix);
+        return dir.isEmpty() ? fallback : dir;
     }
 
     private String buildWorkflow(String env, String configDir,

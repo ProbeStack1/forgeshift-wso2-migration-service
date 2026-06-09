@@ -109,6 +109,13 @@ public class DeckYamlBuilder {
                                           List<TranslatedApiProduct> products,
                                           List<TranslatedMediationPolicy> mediations) {
         String dir = props.getDeck().getKongConfigDirTemplate().replace("{env}", env);
+        // Single-API migration → isolate every file for this API under kong/<env>/<api-slug>/ so the
+        // pipeline applies ONLY this API. An unrelated API's leftover file (a different directory)
+        // is never in the apply path, so it can't block this migration. Multi-API keeps flat.
+        if (props.getDeck().isPerApiDir() && apis != null && apis.size() == 1
+                && apis.get(0).getService() != null) {
+            dir = dir + "/" + fileSlug(apis.get(0).getService().getName(), apis.get(0).getWso2SourceId());
+        }
         Map<String, String> files = new LinkedHashMap<>();
         Map<String, String> svcNames = serviceNames(apis);
 

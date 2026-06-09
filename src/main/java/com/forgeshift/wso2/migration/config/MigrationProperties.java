@@ -143,6 +143,14 @@ public class MigrationProperties {
         private String kongConfigPathTemplate = "kong/{env}/kong.yaml";
         /** Directory the per-API files live in (decK merges every file in it). */
         private String kongConfigDirTemplate = "kong/{env}";
+        /**
+         * When true, a <b>single-API</b> migration writes its files under a per-API subdirectory
+         * {@code kong/<env>/<api-slug>/} and the pipeline applies ONLY that subdirectory — so the
+         * migration touches just that one API ({@code deck gateway apply} is additive, so unrelated
+         * APIs already in the control plane are left untouched, and an unrelated API's leftover file
+         * can't block the apply). Multi-API migrations keep the flat {@code kong/<env>/} layout.
+         */
+        private boolean perApiDir = true;
         private String konnectSecretName = "KONNECT_TOKEN";
         /**
          * TEST-ONLY: deliver the Konnect token to the pipeline as a plaintext GitHub Actions

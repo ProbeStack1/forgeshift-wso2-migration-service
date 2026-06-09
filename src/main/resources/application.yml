@@ -160,6 +160,10 @@ forgeshift:
       konnect-addr: ${DECK_KONNECT_ADDR:https://us.api.konghq.com}
       kong-config-path-template: ${DECK_KONG_CONFIG_PATH:kong/{env}/kong.yaml}
       kong-config-dir-template: ${DECK_KONG_CONFIG_DIR:kong/{env}}
+      # When true, a single-API migration writes to kong/<env>/<api>/ and the pipeline applies ONLY
+      # that subdir — so migrating one API can't be blocked by an unrelated API's leftover file.
+      # Multi-API migrations keep the flat kong/<env>/ layout. Set false to force flat for everything.
+      per-api-dir: ${DECK_PER_API_DIR:true}
       konnect-secret-name: ${DECK_KONNECT_SECRET_NAME:KONNECT_TOKEN}
       # TEST-ONLY: when true, the service sets a PLAINTEXT Actions variable named
       # {konnect-secret-name} on the repo (no libsodium needed) and the generated workflow

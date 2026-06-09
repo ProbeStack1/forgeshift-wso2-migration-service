@@ -99,7 +99,7 @@ class DeckYamlBuilderTest {
     }
 
     @Test
-    void buildFilesEmitsOneFilePerApiInTheConfigDir() {
+    void singleApiMigrationIsolatesFilesUnderAPerApiDir() {
         KongService svc = KongService.builder().name("orders-1-0").host("h").port(80).protocol("http")
                 .tags(List.of("wso2-source-id:api1")).build();
         TranslatedApi api = TranslatedApi.builder().wso2SourceId("api1").service(svc).build();
@@ -107,10 +107,28 @@ class DeckYamlBuilderTest {
         Map<String, String> files = builder.buildFiles("dev", List.of(api),
                 List.of(), List.of(), List.of(), List.of());
 
-        assertTrue(files.containsKey("kong/dev/api-orders-1-0.yaml"));
-        Map<String, Object> root = parse(files.get("kong/dev/api-orders-1-0.yaml"));
+        // per-api-dir defaults on → the single API's files are isolated under kong/dev/<slug>/ so the
+        // pipeline applies only this API (an unrelated API's leftover file can't block it).
+        assertTrue(files.containsKey("kong/dev/orders-1-0/api-orders-1-0.yaml"),
+                "single-API migration should isolate under kong/dev/<api>/");
+        Map<String, Object> root = parse(files.get("kong/dev/orders-1-0/api-orders-1-0.yaml"));
         assertEquals("3.0", root.get("_format_version"));
         assertEquals(1, ((List<?>) root.get("services")).size());
+    }
+
+    @Test
+    void flatLayoutWhenPerApiDirDisabled() {
+        MigrationProperties flat = new MigrationProperties();
+        flat.getDeck().setPerApiDir(false);
+        DeckYamlBuilder flatBuilder = new DeckYamlBuilder(flat);
+        KongService svc = KongService.builder().name("orders-1-0").host("h").port(80).protocol("http")
+                .tags(List.of("wso2-source-id:api1")).build();
+        TranslatedApi api = TranslatedApi.builder().wso2SourceId("api1").service(svc).build();
+
+        Map<String, String> files = flatBuilder.buildFiles("dev", List.of(api),
+                List.of(), List.of(), List.of(), List.of());
+        assertTrue(files.containsKey("kong/dev/api-orders-1-0.yaml"),
+                "with per-api-dir off, files stay flat under kong/dev/");
     }
 
     @Test

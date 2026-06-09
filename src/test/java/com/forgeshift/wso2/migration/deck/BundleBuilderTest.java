@@ -91,6 +91,23 @@ class BundleBuilderTest {
         assertFalse(wf.contains("secrets.KONNECT_TOKEN"));
     }
 
+    @Test
+    void kongConfigPathFollowsThePerApiSubdir(@TempDir Path tmp) throws IOException {
+        MigrationProperties props = new MigrationProperties();
+        props.getDeck().setBundleDir(tmp.toString());
+        BundleBuilder bb = new BundleBuilder(props);
+
+        // Files nested under a per-API subdir → apply path is that subdir, not the whole kong/dev.
+        BundleResult res = bb.build("job9", "dev", "cp", "https://us.api.konghq.com",
+                Map.of("kong/dev/orders-1-0/api-orders-1-0.yaml", "_format_version: \"3.0\"\n",
+                        "kong/dev/orders-1-0/consumers.yaml", "_format_version: \"3.0\"\n"));
+
+        assertEquals("kong/dev/orders-1-0", res.getKongConfigPath());
+        String wf = unzip(Files.readAllBytes(Path.of(res.getBundlePath())))
+                .get(".github/workflows/deploy-dev.yml");
+        assertTrue(wf.contains("kong_config_path: kong/dev/orders-1-0"));
+    }
+
     private static Map<String, String> unzip(byte[] bytes) throws IOException {
         Map<String, String> out = new HashMap<>();
         try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(bytes))) {
