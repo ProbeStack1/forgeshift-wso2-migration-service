@@ -135,6 +135,13 @@ public class DependencyExpander {
             byType.values().forEach(list -> list.forEach(s -> all.add(s.getSourceId())));
             Set<String> skip = presenceChecker.alreadyInKong(creds, req.getCompanyName(), req.getWso2Tenant(), all);
             if (!skip.isEmpty()) {
+                // In DECK mode we KEEP already-migrated resources in the bundle (still flagged below):
+                // decK apply is idempotent and git skips unchanged files, and — crucially — the
+                // per-API directory layout needs the selected API present to anchor its folder.
+                // Dropping it would leave a dependencies-only bundle that falls back to the flat
+                // kong/<env>/ layout and makes the pipeline apply the WHOLE directory. The REST
+                // deployer (deck disabled) still drops them to avoid pointless re-POSTs.
+                boolean keepInBundle = props.getDeck().isEnabled();
                 byType.replaceAll((type, list) -> {
                     List<DiscoverySnapshot> kept = new ArrayList<>();
                     for (DiscoverySnapshot s : list) {
@@ -143,16 +150,21 @@ public class DependencyExpander {
                             skippedWarnings.add(MigrationReport.Warning.builder()
                                     .resourceType(type).wso2SourceId(s.getSourceId()).wso2SourceName(s.getSourceName())
                                     .code("SKIPPED_ALREADY_IN_KONG")
-                                    .message("Already present in Kong (matched by wso2-source-id tag) — not re-migrated.")
+                                    .message(keepInBundle
+                                            ? "Already present in Kong (matched by wso2-source-id tag) — kept in the deck bundle so decK updates it idempotently."
+                                            : "Already present in Kong (matched by wso2-source-id tag) — not re-migrated.")
                                     .build());
+                            if (keepInBundle) {
+                                kept.add(s);   // keep so the per-API folder anchors; decK apply is idempotent
+                            }
                         } else {
                             kept.add(s);
                         }
                     }
                     return kept;
                 });
-                log.info("[dependency] skipped {} resource(s) already present in Kong for job {}",
-                        skippedIds.size(), job.getId());
+                log.info("[dependency] {} resource(s) already in Kong for job {} ({})",
+                        skippedIds.size(), job.getId(), keepInBundle ? "kept in deck bundle" : "skipped");
             }
         }
 
