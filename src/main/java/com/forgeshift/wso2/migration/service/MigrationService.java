@@ -469,10 +469,12 @@ public class MigrationService {
                         new ResourceCounters(0, 0, 0, 0, scopeSnapshots.size(), List.of()),
                         bundle);
                 job.getCounts().setTotalDeployed(job.getCounts().getTotalTranslated());
-                // If the bundle was pushed to git AND we have a callback URL, the GitHub Actions
-                // pipeline will run `deck gateway apply` and POST the result back to
+                // If the pipeline was DISPATCHED AND we have a callback URL, the GitHub Actions
+                // run will `deck gateway apply` and POST the result back to
                 // /migrations/{id}/deck-result. Don't claim COMPLETED yet — wait for that result.
-                boolean awaitPipeline = StringUtils.hasText(bundle.getGitCommitSha())
+                // (Gate on dispatch, not on a commit sha: a re-run with no file change still has a
+                // pipeline to await even though nothing was committed.)
+                boolean awaitPipeline = bundle.isDispatched()
                         && StringUtils.hasText(props.getDeck().getCallbackBaseUrl());
                 if (awaitPipeline) {
                     job.setState(MigrationState.DEPLOYING_TO_KONG);

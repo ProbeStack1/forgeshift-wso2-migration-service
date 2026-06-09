@@ -28,9 +28,16 @@ public class BundleResult {
     /** Full repo file contents (paths → content) for auto-commit; not persisted. */
     @JsonIgnore
     private Map<String, String> repoFileContents;
-    /** Paths that should be committed only once (workflow, README). */
+    /** Paths that should be committed only once (README). */
     @JsonIgnore
     private List<String> createOnlyPaths;
+    /** Basename of the caller workflow to dispatch, e.g. {@code deploy-dev.yml}. */
+    @JsonIgnore
+    private String workflowFile;
+    /** Per-migration callback URL passed as the {@code workflow_dispatch} input
+     *  ({@code …/migrations/{jobId}/deck-result}); null when no callback is configured. */
+    @JsonIgnore
+    private String callbackUrl;
 
     // ----- git auto-commit outcome (null when auto-commit is off/skipped) -----
     private String gitRepo;
@@ -39,4 +46,6 @@ public class BundleResult {
     private String gitCommitUrl;
     private Integer gitFilesPushed;
     private String gitError;
+    /** True when the GitHub Actions pipeline was successfully dispatched for this migration. */
+    private boolean dispatched;
 }

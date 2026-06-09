@@ -41,6 +41,12 @@ import java.util.UUID;
  * referencing the member service <b>by name</b> (decK merges across files, so the name resolves
  * even when the service is defined in a different file). Every entity keeps its
  * {@code wso2-source-id:<uuid>} tag for later mapping rebuild.
+ *
+ * <p>Entities are emitted <b>without an {@code id}</b> by default (see {@link #putId}) so
+ * {@code deck gateway apply} matches an already-present Konnect entity by name and updates it
+ * instead of colliding on the name; the real Kong ids are recovered afterwards from
+ * {@code deck gateway dump} (see {@code DeckResultMapper}). Set {@code deck.emit-entity-ids} to
+ * pin deterministic ids instead (greenfield control planes only).
  */
 @Slf4j
 @Component
@@ -158,13 +164,13 @@ public class DeckYamlBuilder {
     private Map<String, Object> serviceNode(TranslatedApi a) {
         Map<String, Object> svc = toMap(a.getService());
         String svcName = a.getService().getName();
-        svc.put("id", stableId("service:" + svcName));
+        putId(svc, "service:" + svcName);
         List<Object> routeList = new ArrayList<>();
         if (a.getRoutes() != null) {
             for (KongRoute r : a.getRoutes()) {
                 Map<String, Object> routeMap = toMap(r);
                 routeMap.remove("service");   // nested under the service → no FK needed
-                routeMap.put("id", stableId("route:" + svcName + ":" + r.getName()));
+                putId(routeMap, "route:" + svcName + ":" + r.getName());
                 List<KongPlugin> rps = a.getRoutePlugins() == null ? null : a.getRoutePlugins().get(r.getName());
                 List<Object> rpMaps = pluginMaps(rps, "route:" + svcName + ":" + r.getName());
                 if (!rpMaps.isEmpty()) routeMap.put("plugins", rpMaps);
@@ -181,12 +187,12 @@ public class DeckYamlBuilder {
         if (a.getUpstream() == null) return null;
         Map<String, Object> up = toMap(a.getUpstream());
         String upName = a.getUpstream().getName();
-        up.put("id", stableId("upstream:" + upName));
+        putId(up, "upstream:" + upName);
         List<Object> tgts = new ArrayList<>();
         if (a.getTargets() != null) {
             a.getTargets().forEach(t -> {
                 Map<String, Object> tm = toMap(t);
-                tm.put("id", stableId("target:" + upName + ":" + t.getTarget()));
+                putId(tm, "target:" + upName + ":" + t.getTarget());
                 tgts.add(tm);
             });
         }
@@ -201,7 +207,7 @@ public class DeckYamlBuilder {
             if (c.getConsumer() == null) continue;
             Map<String, Object> cm = toMap(c.getConsumer());
             Object cid = cm.getOrDefault("username", cm.get("custom_id"));
-            cm.put("id", stableId("consumer:" + cid));
+            putId(cm, "consumer:" + cid);
             List<Object> cps = pluginMaps(c.getConsumerPlugins(), "consumer:" + cid);
             if (!cps.isEmpty()) cm.put("plugins", cps);
             out.add(cm);
@@ -215,7 +221,7 @@ public class DeckYamlBuilder {
         for (TranslatedCertificate tc : certificates) {
             if (tc.getCaCertificate() == null || !StringUtils.hasText(tc.getCaCertificate().getCert())) continue;
             Map<String, Object> cm = toMap(tc.getCaCertificate());
-            cm.put("id", stableId("ca:" + tc.getCaCertificate().getCert()));
+            putId(cm, "ca:" + tc.getCaCertificate().getCert());
             out.add(cm);
         }
         return out;
@@ -235,7 +241,7 @@ public class DeckYamlBuilder {
                 }
                 Map<String, Object> routeMap = toMap(pr.getRoute());
                 routeMap.put("service", Map.of("name", svcName));
-                routeMap.put("id", stableId("route:product:" + pr.getRoute().getName()));
+                putId(routeMap, "route:product:" + pr.getRoute().getName());
                 List<Object> rpMaps = pluginMaps(pr.getPlugins(), "route:product:" + pr.getRoute().getName());
                 if (!rpMaps.isEmpty()) routeMap.put("plugins", rpMaps);
                 out.add(routeMap);
@@ -259,7 +265,7 @@ public class DeckYamlBuilder {
             pm.remove("route");
             pm.remove("consumer");
             pm.put("service", Map.of("name", svcName));
-            pm.put("id", stableId("plugin:service:" + svcName + ":mediation:" + m.getWso2SourceId()));
+            putId(pm, "plugin:service:" + svcName + ":mediation:" + m.getWso2SourceId());
             out.add(pm);
         }
         return out;
@@ -288,19 +294,36 @@ public class DeckYamlBuilder {
             pm.remove("service");
             pm.remove("route");
             pm.remove("consumer");
-            pm.put("id", stableId("plugin:" + parentKey + ":" + p.getName()));
+            putId(pm, "plugin:" + parentKey + ":" + p.getName());
             out.add(pm);
         }
         return out;
     }
 
     /**
-     * Deterministic UUID for a Kong entity, derived from a stable identity key (entity
-     * type + name). Pinning the {@code id} makes {@code deck gateway apply} idempotent:
-     * re-applying the same config matches the existing entity by id and UPDATES it instead
-     * of creating a duplicate with a fresh random id (the failure mode that left two
-     * services with the same name in Konnect and broke every subsequent apply).
+     * Conditionally pin a deterministic {@code id} on an entity node, gated by
+     * {@code deck.emit-entity-ids} (default off).
+     *
+     * <p><b>Off (default) — match by name.</b> Nodes carry NO id, so {@code deck gateway apply}
+     * reconciles each entity against the control plane by its unique natural key (service /
+     * route / upstream / consumer name, target host:port, plugin name+scope, ca-cert content),
+     * ADOPTS the existing entity's real id, and UPDATES it. This is what makes incremental
+     * migration onto a control plane that may already hold same-named entities safe: a service
+     * already present as {@code existing-service} is updated, not re-created. Pinning a freshly
+     * <i>generated</i> id does the opposite — decK sees an id Kong doesn't know, tries to CREATE,
+     * and Kong rejects it because the name is taken ("entity already exists").
+     *
+     * <p><b>On — pin generated ids.</b> Re-applying then matches by id and updates. Only safe for
+     * a greenfield control plane where these same deterministic ids were used from the first
+     * apply; an escape hatch, not the default.
      */
+    private void putId(Map<String, Object> node, String key) {
+        if (props.getDeck().isEmitEntityIds()) {
+            node.put("id", stableId(key));
+        }
+    }
+
+    /** Deterministic name-based UUID from a stable identity key; used only when {@link #putId} is on. */
     private static String stableId(String key) {
         return UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8)).toString();
     }

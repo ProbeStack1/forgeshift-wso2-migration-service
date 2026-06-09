@@ -47,11 +47,14 @@ public class BundleBuilder {
         String configDir = d.getKongConfigDirTemplate().replace("{env}", env);
         String wfPath = workflowPath(env);
 
-        // Full repo layout: per-API kong files + the pipeline workflow + README.
-        Map<String, String> repoFiles = new LinkedHashMap<>(kongFiles);
-        repoFiles.put(wfPath, buildWorkflow(jobId, env, configDir, controlPlaneName, konnectAddr,
+        // Full repo layout: the (static, dispatch-only) workflow + README FIRST, then the per-API
+        // kong files. Workflow-first means the dispatch-only caller is in place before any kong
+        // file is committed, so a lingering old push-triggered workflow can't fire a stray run.
+        Map<String, String> repoFiles = new LinkedHashMap<>();
+        repoFiles.put(wfPath, buildWorkflow(env, configDir, controlPlaneName, konnectAddr,
                 konnectAccessToken));
         repoFiles.put("README.md", buildReadme(jobId, env, controlPlaneName, configDir));
+        repoFiles.putAll(kongFiles);
 
         Path bundlePath;
         try {
@@ -71,6 +74,11 @@ public class BundleBuilder {
 
         String base = d.getDownloadBaseUrl() == null ? "" : d.getDownloadBaseUrl();
         String downloadUrl = base + "/migrations/" + jobId + "/bundle";
+        // Per-migration callback URL — passed to the pipeline as a workflow_dispatch INPUT (not
+        // baked into the shared workflow file), so every job gets its OWN callback target.
+        String callbackUrl = StringUtils.hasText(d.getCallbackBaseUrl())
+                ? d.getCallbackBaseUrl() + "/migrations/" + jobId + "/deck-result"
+                : null;
 
         log.info("Built decK bundle for job {} at {} ({} files)", jobId, bundlePath, repoFiles.size());
         return BundleResult.builder()
@@ -84,20 +92,32 @@ public class BundleBuilder {
                 .downloadUrl(downloadUrl)
                 .files(List.copyOf(repoFiles.keySet()))
                 .repoFileContents(repoFiles)
-                .createOnlyPaths(List.of(wfPath, "README.md"))
+                .createOnlyPaths(List.of("README.md"))
+                .workflowFile("deploy-" + env + ".yml")
+                .callbackUrl(callbackUrl)
                 .build();
     }
 
-    private String buildWorkflow(String jobId, String env, String configDir,
+    private String buildWorkflow(String env, String configDir,
                                  String controlPlaneName, String konnectAddr,
                                  String konnectAccessToken) {
         MigrationProperties.Deck d = props.getDeck();
+        // STATIC, dispatch-only caller. The per-migration callback URL is NOT baked in — it is
+        // supplied at dispatch time as the `result_callback_url` input, so the same shared file
+        // serves every job and each run reports back to the RIGHT migration. No `push` trigger,
+        // which removes the stray-run and stale-shared-callback problems of the old create-only file.
         List<String> lines = new ArrayList<>(List.of(
                 "name: Deploy Kong (" + env + ")",
+                "# Dispatched by forgeshift-wso2-migration-service via the GitHub API. The migration",
+                "# passes result_callback_url so the pipeline POSTs its apply result back to the",
+                "# matching migration job. Do NOT add a push trigger — that reintroduces stray runs.",
                 "on:",
                 "  workflow_dispatch:",
-                "  push:",
-                "    branches: [ main ]",
+                "    inputs:",
+                "      result_callback_url:",
+                "        description: 'URL the pipeline POSTs its apply result to (per migration).'",
+                "        required: false",
+                "        default: ''",
                 "jobs:",
                 "  deploy:",
                 "    uses: " + d.getPipelineTemplateRef(),
@@ -110,11 +130,8 @@ public class BundleBuilder {
                 "      control_plane_name: " + controlPlaneName,
                 "      deck_mode: " + d.getDeckMode(),
                 "      konnect_addr: " + konnectAddr,
-                "      validate_only: false"));
-        if (StringUtils.hasText(d.getCallbackBaseUrl())) {
-            lines.add("      result_callback_url: " + d.getCallbackBaseUrl()
-                    + "/migrations/" + jobId + "/deck-result");
-        }
+                "      validate_only: false",
+                "      result_callback_url: ${{ inputs.result_callback_url }}"));
         // Prefer the resolved profile token for the current test flow. Secret/variable
         // references remain as fallback for environments that do not inline credentials.
         String tokenRef = StringUtils.hasText(konnectAccessToken)

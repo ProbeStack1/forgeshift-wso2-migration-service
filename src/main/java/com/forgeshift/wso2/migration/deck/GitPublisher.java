@@ -118,7 +118,8 @@ public class GitPublisher {
      * file and leaves the rest — and Kong — untouched.
      */
     public GitPushResult pushFiles(KongKonnectCredentials creds, String companyName,
-                                   Map<String, String> files, Set<String> createOnlyPaths, String message) {
+                                   Map<String, String> files, Set<String> createOnlyPaths, String message,
+                                   String dispatchWorkflowFile, Map<String, String> dispatchInputs) {
         MigrationProperties.Deck.Git cfg = props.getDeck().getGit();
         if (!cfg.isEnabled()) {
             return skip("auto-commit disabled (forgeshift.migration.deck.git.enabled=false)");
@@ -157,26 +158,47 @@ public class GitPublisher {
         int pushed = 0;
         String lastSha = null;
         String lastUrl = null;
+        boolean dispatched = false;
+        String dispatchError = null;
         try {
             // Only PUSH to an existing repo — never create the repo/branch (creating in an org
             // needs elevated perms and was the source of the 403). A missing repo/branch now
             // surfaces as a clear error on the file PUT instead.
             // Set the Konnect token as a plaintext Actions variable BEFORE the commits so it
-            // exists when the push triggers the run (test mode only; no-op otherwise).
+            // exists when the run dispatches (test mode only; no-op otherwise).
             maybeSetKonnectVariable(gh, owner, repoName, creds);
             for (Map.Entry<String, String> e : files.entrySet()) {
                 String path = e.getKey();
-                String existingSha = getSha(gh, owner, repoName, path, branch);
-                if (existingSha != null && createOnlyPaths != null && createOnlyPaths.contains(path)) {
+                String newContent = e.getValue();
+                Existing existing = getExisting(gh, owner, repoName, path, branch);
+                if (existing != null && createOnlyPaths != null && createOnlyPaths.contains(path)) {
                     log.debug("Skipping existing create-only file {}", path);
-                    continue;   // workflow/README written once, not re-committed every run
+                    continue;   // README written once, not re-committed every run
+                }
+                if (existing != null && newContent.equals(existing.content())) {
+                    log.debug("Unchanged, skipping {}", path);
+                    continue;   // avoid churn — identical content, no commit needed
                 }
                 Map<String, Object> commit = putFile(gh, owner, repoName, path, branch,
-                        e.getValue(), existingSha, message, cfg);
+                        newContent, existing == null ? null : existing.sha(), message, cfg);
                 pushed++;
                 if (commit != null && commit.get("commit") instanceof Map<?, ?> cm) {
                     lastSha = str(cm.get("sha"));
                     lastUrl = str(cm.get("html_url"));
+                }
+            }
+
+            // Trigger the pipeline EXPLICITLY (workflow_dispatch) so it picks up THIS migration's
+            // result_callback_url — instead of relying on a push trigger baked into a shared,
+            // possibly-stale workflow file. A dispatch failure is recorded but does not discard the
+            // commit outcome above.
+            if (StringUtils.hasText(dispatchWorkflowFile)) {
+                try {
+                    dispatchWorkflow(gh, owner, repoName, branch, dispatchWorkflowFile, dispatchInputs);
+                    dispatched = true;
+                } catch (Exception ex) {
+                    dispatchError = "files committed but workflow dispatch failed: " + ex.getMessage();
+                    log.error("Workflow dispatch failed for {} ({}): {}", repo, dispatchWorkflowFile, ex.getMessage());
                 }
             }
         } catch (WebClientResponseException ex) {
@@ -192,10 +214,13 @@ public class GitPublisher {
                     .filesPushed(pushed).error(ex.getMessage()).build();
         }
 
-        log.info("Auto-committed {} file(s) to {}@{} (last commit {})", pushed, repo, branch, lastSha);
+        log.info("Auto-committed {} file(s) to {}@{} (last commit {}){}", pushed, repo, branch, lastSha,
+                dispatched ? " + dispatched " + dispatchWorkflowFile : "");
         return GitPushResult.builder()
-                .pushed(pushed > 0).repo(repo).branch(branch)
-                .commitSha(lastSha).commitUrl(lastUrl).filesPushed(pushed).build();
+                // pushed/dispatched ⇒ there's a pipeline to await even if no file changed (re-run).
+                .pushed(pushed > 0 || dispatched).repo(repo).branch(branch)
+                .commitSha(lastSha).commitUrl(lastUrl).filesPushed(pushed)
+                .dispatched(dispatched).error(dispatchError).build();
     }
 
     /**
@@ -327,6 +352,70 @@ public class GitPublisher {
             return resp == null ? null : str(resp.get("sha"));
         } catch (WebClientResponseException.NotFound nf) {
             return null;   // new file
+        }
+    }
+
+    /** Existing file sha + decoded text content (null when the file doesn't exist). */
+    private record Existing(String sha, String content) {}
+
+    /** Like {@link #getSha} but also returns the decoded content, so callers can skip identical PUTs. */
+    private Existing getExisting(WebClient gh, String owner, String repo, String path, String branch) {
+        try {
+            Map<?, ?> resp = gh.get()
+                    .uri("/repos/" + owner + "/" + repo + "/contents/" + path + "?ref=" + branch)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .block();
+            if (resp == null) {
+                return null;
+            }
+            String content = null;
+            if ("base64".equals(str(resp.get("encoding"))) && resp.get("content") != null) {
+                content = new String(Base64.getMimeDecoder().decode(String.valueOf(resp.get("content"))),
+                        StandardCharsets.UTF_8);
+            }
+            return new Existing(str(resp.get("sha")), content);
+        } catch (WebClientResponseException.NotFound nf) {
+            return null;   // new file
+        }
+    }
+
+    /**
+     * Trigger a {@code workflow_dispatch} run of the caller workflow, passing per-migration inputs
+     * (notably {@code result_callback_url}). A just-committed workflow file can take a moment to be
+     * registered for dispatch, so a 404 is retried a few times.
+     */
+    private void dispatchWorkflow(WebClient gh, String owner, String repo, String branch,
+                                  String workflowFile, Map<String, String> inputs) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("ref", branch);
+        if (inputs != null && !inputs.isEmpty()) {
+            body.put("inputs", inputs);
+        }
+        WebClientResponseException last = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                gh.post()
+                        .uri("/repos/{o}/{r}/actions/workflows/{w}/dispatches", owner, repo, workflowFile)
+                        .bodyValue(body)
+                        .retrieve()
+                        .bodyToMono(Void.class)
+                        .block();
+                log.info("Dispatched workflow {} on {}/{}@{}", workflowFile, owner, repo, branch);
+                return;
+            } catch (WebClientResponseException.NotFound nf) {
+                last = nf;   // workflow file not registered yet — wait and retry
+                sleepQuietly(1500L * attempt);
+            }
+        }
+        throw last;
+    }
+
+    private static void sleepQuietly(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
         }
     }
 

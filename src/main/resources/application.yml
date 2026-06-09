@@ -149,6 +149,11 @@ forgeshift:
       enabled: ${DECK_ENABLED:true}
       format-version: "3.0"
       transform: true
+      # When false (default) the generated files carry NO entity ids, so `deck gateway apply`
+      # matches existing Konnect entities by their unique name and UPDATES them (adopting the
+      # real id) instead of erroring with "entity already exists" when a same-named entity has a
+      # different id. Turn on only for a greenfield CP that used these generated ids from day one.
+      emit-entity-ids: ${DECK_EMIT_ENTITY_IDS:false}
       env-name: ${DECK_ENV:dev}
       pipeline-template-ref: ${DECK_PIPELINE_TEMPLATE_REF:migrationtestdeck/pipeline-template-poc/.github/workflows/kong.yaml@main}
       deck-mode: ${DECK_MODE:apply}

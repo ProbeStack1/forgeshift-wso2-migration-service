@@ -113,6 +113,56 @@ class DeckYamlBuilderTest {
         assertEquals(1, ((List<?>) root.get("services")).size());
     }
 
+    @Test
+    void omitsAllEntityIdsByDefaultSoDeckMatchesByName() {
+        KongService svc = KongService.builder().name("petstore-2-0").protocol("https")
+                .host("api.example.com").port(443).path("/").build();
+        KongRoute route = KongRoute.builder().name("petstore-2-0-get")
+                .methods(List.of("GET")).paths(List.of("/petstore/pet")).build();
+        KongPlugin rlimit = KongPlugin.builder().name("rate-limiting").config(Map.of("minute", 200)).build();
+        KongUpstream up = KongUpstream.builder().name("petstore-2-0-upstream").algorithm("round-robin").build();
+        KongTarget tgt = KongTarget.builder().target("api.example.com:443").weight(100).build();
+        TranslatedApi api = TranslatedApi.builder()
+                .wso2SourceId("abc").service(svc)
+                .routes(new ArrayList<>(List.of(route)))
+                .servicePlugins(new ArrayList<>(List.of(KongPlugin.builder().name("jwt").build())))
+                .routePlugins(new HashMap<>(Map.of("petstore-2-0-get", List.of(rlimit))))
+                .upstream(up).targets(new ArrayList<>(List.of(tgt)))
+                .build();
+
+        Map<String, Object> root = parse(builder.build(List.of(api), List.of(), List.of(), List.of(), List.of()));
+        assertNoIdAnywhere(root);
+    }
+
+    @Test
+    void pinsDeterministicIdsWhenEmitEntityIdsIsOn() {
+        MigrationProperties p = new MigrationProperties();
+        p.getDeck().setEmitEntityIds(true);
+        DeckYamlBuilder withIds = new DeckYamlBuilder(p);
+
+        KongService svc = KongService.builder().name("orders-1-0").host("h").port(80).protocol("http").build();
+        TranslatedApi api = TranslatedApi.builder().wso2SourceId("api1").service(svc).build();
+
+        Map<String, Object> root = parse(withIds.build(List.of(api), List.of(), List.of(), List.of(), List.of()));
+        Map<?, ?> s0 = (Map<?, ?>) ((List<?>) root.get("services")).get(0);
+        Object id = s0.get("id");
+        assertTrue(id instanceof String && !((String) id).isBlank(), "id should be pinned when the flag is on");
+
+        // deterministic: a second build of the same input yields the same id
+        Map<String, Object> root2 = parse(withIds.build(List.of(api), List.of(), List.of(), List.of(), List.of()));
+        assertEquals(id, ((Map<?, ?>) ((List<?>) root2.get("services")).get(0)).get("id"));
+    }
+
+    /** Recursively assert no map in the parsed YAML carries an {@code id} key. */
+    private static void assertNoIdAnywhere(Object node) {
+        if (node instanceof Map<?, ?> m) {
+            assertFalse(m.containsKey("id"), "no entity should carry an 'id' when emit-entity-ids is off");
+            for (Object v : m.values()) assertNoIdAnywhere(v);
+        } else if (node instanceof List<?> l) {
+            for (Object v : l) assertNoIdAnywhere(v);
+        }
+    }
+
     private static Map<String, Object> parse(String yaml) {
         return new Yaml().load(yaml);
     }

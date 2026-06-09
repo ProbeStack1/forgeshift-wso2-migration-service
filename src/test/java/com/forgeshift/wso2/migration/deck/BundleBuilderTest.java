@@ -42,7 +42,17 @@ class BundleBuilderTest {
         assertTrue(wf.contains("deck_mode: apply"));
         assertTrue(wf.contains("control_plane_name: my-cp"));
         assertTrue(wf.contains("konnect_addr: https://us.api.konghq.com"));
-        assertTrue(wf.contains("result_callback_url: https://probestack.io/wso2/migration/v1/migrations/job123/deck-result"));
+        // The callback URL is NOT baked into the (shared, static) workflow — it's a dispatch input,
+        // and the per-job target URL is carried on the BundleResult for the dispatch call.
+        assertTrue(wf.contains("result_callback_url: ${{ inputs.result_callback_url }}"),
+                "callback URL must be a workflow_dispatch input, not hard-coded per job");
+        assertFalse(wf.contains("/migrations/job123/deck-result"),
+                "per-job callback URL must NOT be baked into the shared workflow file");
+        assertEquals("https://probestack.io/wso2/migration/v1/migrations/job123/deck-result",
+                res.getCallbackUrl());
+        assertEquals("deploy-dev.yml", res.getWorkflowFile());
+        assertTrue(wf.contains("workflow_dispatch:"), "must be dispatch-triggered");
+        assertFalse(wf.contains("push:"), "must NOT have a push trigger (avoids stray runs)");
         assertTrue(wf.contains("secrets.KONNECT_TOKEN"));
         assertFalse(wf.contains("kpat_"), "must not hardcode a Konnect PAT");
     }

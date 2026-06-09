@@ -55,15 +55,17 @@ class DeckBundleDeployerTest {
                 .kongConfigPath("kong/dev").downloadUrl("http://x/migrations/job1/bundle")
                 .bundlePath("/tmp/job1/bundle.zip")
                 .repoFileContents(repoFiles)
-                .createOnlyPaths(List.of(".github/workflows/deploy-dev.yml", "README.md"))
+                .createOnlyPaths(List.of("README.md"))
+                .workflowFile("deploy-dev.yml")
+                .callbackUrl("http://x/migrations/job1/deck-result")
                 .build();
         when(bundleBuilder.build(any(), any(), any(), any(), any(), any())).thenReturn(built);
 
-        when(git.pushFiles(any(), any(), any(), any(), any())).thenReturn(GitPushResult.builder()
+        when(git.pushFiles(any(), any(), any(), any(), any(), any(), any())).thenReturn(GitPushResult.builder()
                 .pushed(true).repo("ProbeStack1/probestack1-kong-config").branch("main")
                 .commitSha("abc123")
                 .commitUrl("https://github.com/ProbeStack1/probestack1-kong-config/commit/abc123")
-                .filesPushed(3).build());
+                .filesPushed(3).dispatched(true).build());
 
         MigrationJob job = MigrationJob.builder()
                 .id("job1").companyName("probestack1").wso2Tenant("carbon.super").build();
@@ -76,11 +78,11 @@ class DeckBundleDeployerTest {
         BundleResult out = deployer.buildBundle(job, creds,
                 List.of(), List.of(), List.of(), List.of(), List.of());
 
-        // Commits the real files for company 'probestack1' (so git_profiles is resolved and
-        // the pipeline fires); never the zip archive.
+        // Commits the real files for company 'probestack1' (so git_profiles is resolved) and
+        // dispatches the deploy-dev.yml workflow with this job's callback; never the zip archive.
         verify(git).pushFiles(eq(creds), eq("probestack1"), eq(repoFiles),
-                argThat(s -> s.contains(".github/workflows/deploy-dev.yml") && s.contains("README.md")),
-                anyString());
+                argThat(s -> s.contains("README.md")),
+                anyString(), eq("deploy-dev.yml"), any());
         verify(git, never()).pushBundle(any(), any(), any(), any());
 
         // Git outcome flows back onto the bundle → report shows non-null git fields.

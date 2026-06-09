@@ -20,6 +20,7 @@ import org.springframework.util.StringUtils;
 
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -64,23 +65,29 @@ public class DeckBundleDeployer {
         BundleResult bundle = bundleBuilder.build(job.getId(), env, cpName, addr, token, kongFiles);
 
         if (props.getDeck().getGit().isEnabled()) {
-            // Commit the UNZIPPED files (kong/<env>/*.yaml + workflow + README) to the
-            // Kong-config repo so the GitHub Actions pipeline fires on push to its
-            // default branch. (pushBundle() only archives the zip and never triggers a
-            // pipeline.) Workflow + README are create-only, so re-migrating an API
-            // rewrites just that API's file and leaves the rest — and Kong — untouched.
+            // Commit the UNZIPPED files (workflow + README + kong/<env>/*.yaml) to the Kong-config
+            // repo, then EXPLICITLY dispatch the pipeline (workflow_dispatch) passing this job's
+            // result_callback_url — so the run reports back to THIS migration. Never dispatch a
+            // dry-run (that would apply to Kong). README stays create-only; the workflow + kong
+            // files are committed only when their content actually changed (no churn).
             Set<String> createOnly = bundle.getCreateOnlyPaths() == null
                     ? Set.of() : new LinkedHashSet<>(bundle.getCreateOnlyPaths());
+            String dispatchWf = job.isDryRun() ? null : bundle.getWorkflowFile();
+            Map<String, String> dispatchInputs = job.isDryRun() ? null
+                    : Map.of("result_callback_url",
+                            bundle.getCallbackUrl() == null ? "" : bundle.getCallbackUrl());
             GitPushResult push = gitPublisher.pushFiles(creds, job.getCompanyName(),
-                    bundle.getRepoFileContents(), createOnly, commitMessage(job));
+                    bundle.getRepoFileContents(), createOnly, commitMessage(job),
+                    dispatchWf, dispatchInputs);
             bundle.setGitRepo(push.getRepo());
             bundle.setGitBranch(push.getBranch());
             bundle.setGitCommitSha(push.getCommitSha());
             bundle.setGitCommitUrl(push.getCommitUrl());
             bundle.setGitFilesPushed(push.getFilesPushed());
             bundle.setGitError(push.getError());
-            if (!push.isPushed() && push.getError() != null) {
-                log.warn("Auto-commit not completed for job {}: {}", job.getId(), push.getError());
+            bundle.setDispatched(push.isDispatched());
+            if (push.getError() != null) {
+                log.warn("Auto-commit/dispatch issue for job {}: {}", job.getId(), push.getError());
             }
         }
 

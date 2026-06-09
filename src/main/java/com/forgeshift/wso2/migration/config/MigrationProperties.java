@@ -126,6 +126,16 @@ public class MigrationProperties {
         private boolean enabled = true;
         private String formatVersion = "3.0";
         private boolean transform = true;
+        /**
+         * Whether to pin a deterministic {@code id} on every generated entity.
+         * <p><b>Default {@code false}</b>: the files carry NO ids, so {@code deck gateway apply}
+         * matches an existing Konnect entity by its unique name and UPDATES it (adopting the
+         * real id) instead of failing with "entity already exists" when a same-named entity
+         * already has a different real id — the safe behaviour for incremental migration onto a
+         * control plane that may already hold entities. Turn ON only for a greenfield control
+         * plane where these same generated ids were used from the very first apply.
+         */
+        private boolean emitEntityIds = false;
         private String envName = "dev";
         private String pipelineTemplateRef = "ProbeStack1/pipeline-template-poc/.github/workflows/kong.yaml@main";
         private String deckMode = "apply";

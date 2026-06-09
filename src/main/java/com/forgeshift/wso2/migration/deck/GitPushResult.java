@@ -13,5 +13,6 @@ public class GitPushResult {
     private String commitSha;     // sha of the last commit made
     private String commitUrl;     // html_url of the last commit
     private int filesPushed;
-    private String error;         // non-null when the push was skipped/failed
+    private boolean dispatched;   // true when the workflow_dispatch run was accepted
+    private String error;         // non-null when the push/dispatch was skipped/failed
 }
