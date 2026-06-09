@@ -148,7 +148,7 @@ public class MigrationProperties {
         /** Public base URL of THIS service so the pipeline can POST results back to /migrations/{id}/deck-result. */
         private String callbackBaseUrl = "";
         /** If no deck-apply callback arrives within this many minutes, a DEPLOYING_TO_KONG job is marked TIMED_OUT. */
-        private int applyTimeoutMinutes = 15;
+        private int applyTimeoutMinutes = 2;
         private String storage = "temp";
         private Git git = new Git();
 
