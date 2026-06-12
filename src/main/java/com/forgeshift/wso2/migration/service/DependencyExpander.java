@@ -8,6 +8,7 @@ import com.forgeshift.wso2.migration.reader.AssessmentDependencyReader;
 import com.forgeshift.wso2.migration.reader.DiscoverySnapshot;
 import com.forgeshift.wso2.migration.reader.DiscoverySnapshotReader;
 import com.forgeshift.wso2.migration.reader.KongKonnectCredentials;
+import com.forgeshift.wso2.migration.reader.RelationGraphReader;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -42,6 +43,7 @@ public class DependencyExpander {
     private static final List<String> DEP_TYPES = List.of("subscriptions", "applications", "apiproducts", "apis");
 
     private final AssessmentDependencyReader dependencyReader;
+    private final RelationGraphReader relationGraphReader;
     private final DependencyResolver dependencyResolver;
     private final KongPresenceChecker presenceChecker;
     private final DiscoverySnapshotReader snapshotReader;
@@ -81,6 +83,10 @@ public class DependencyExpander {
         byType.forEach((type, list) -> list.forEach(s -> roots.add(new Root(type, s))));
 
         Map<String, Map<String, List<String>>> graph = dependencyReader.readGraph(effectiveAssessmentTxn(req));
+        // Fold in the relationship-sync edges (the access-graph's store). It is refreshed
+        // independently of assessment runs, so it catches subscriptions/apps created after
+        // the assessment snapshot — without it, those would be silently left out of the run.
+        relationGraphReader.mergeInto(graph, req.getCompanyName(), req.getWso2Tenant());
 
         // 1) resolve each root's DIRECT deps separately so we can attribute them per root.
         Map<String, Map<String, Set<String>>> rootDirect = new LinkedHashMap<>();   // rootId -> type -> dep ids

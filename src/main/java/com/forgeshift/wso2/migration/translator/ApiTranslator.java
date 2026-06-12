@@ -237,7 +237,14 @@ public class ApiTranslator {
             boolean oauth = security.stream().anyMatch(s -> s != null && s.toLowerCase().contains("oauth2"));
             boolean apiKey = security.stream().anyMatch(s -> s != null && s.toLowerCase().contains("api_key"));
             if (oauth) {
-                svcPlugins.add(KongPlugin.builder().name("jwt").enabled(true).tags(tags).build());
+                // Key consumers by the client-id claim (WSO2 puts it in azp), not the default
+                // iss — every WSO2 token shares one iss, so iss-keying would collapse all
+                // consumers onto one credential and break per-app identity/rate-limits. This
+                // matches the per-consumer jwt_secrets emitted by CredentialTranslator.
+                Map<String, Object> jwtCfg = new LinkedHashMap<>();
+                jwtCfg.put("key_claim_name", props.getCredentials().getJwtKeyClaim());
+                jwtCfg.put("claims_to_verify", List.of("exp"));
+                svcPlugins.add(KongPlugin.builder().name("jwt").config(jwtCfg).enabled(true).tags(tags).build());
             }
             if (apiKey) {
                 svcPlugins.add(KongPlugin.builder().name("key-auth").enabled(true).tags(tags).build());

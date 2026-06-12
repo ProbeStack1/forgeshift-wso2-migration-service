@@ -1,6 +1,7 @@
 package com.forgeshift.wso2.migration.deck;
 
 import com.forgeshift.wso2.migration.config.MigrationProperties;
+import com.forgeshift.wso2.migration.domain.kong.KongConsumer;
 import com.forgeshift.wso2.migration.domain.kong.KongPlugin;
 import com.forgeshift.wso2.migration.domain.kong.KongRoute;
 import com.forgeshift.wso2.migration.domain.kong.KongService;
@@ -8,6 +9,7 @@ import com.forgeshift.wso2.migration.domain.kong.KongTarget;
 import com.forgeshift.wso2.migration.domain.kong.KongUpstream;
 import com.forgeshift.wso2.migration.translator.TranslatedApi;
 import com.forgeshift.wso2.migration.translator.TranslatedApiProduct;
+import com.forgeshift.wso2.migration.translator.TranslatedConsumer;
 import com.forgeshift.wso2.migration.translator.TranslatedMediationPolicy;
 import org.junit.jupiter.api.Test;
 import org.yaml.snakeyaml.Yaml;
@@ -169,6 +171,30 @@ class DeckYamlBuilderTest {
         // deterministic: a second build of the same input yields the same id
         Map<String, Object> root2 = parse(withIds.build(List.of(api), List.of(), List.of(), List.of(), List.of()));
         assertEquals(id, ((Map<?, ?>) ((List<?>) root2.get("services")).get(0)).get("id"));
+    }
+
+    @Test
+    void emitsConsumerCredentialsNestedUnderTheConsumer() {
+        KongConsumer kc = KongConsumer.builder()
+                .username("seed05app").custom_id("app-uuid-5")
+                .jwt_secrets(new ArrayList<>(List.of(new HashMap<>(Map.of(
+                        "key", "ck-abcdef123", "algorithm", "RS256",
+                        "rsa_public_key", "${WSO2_KM_PUBLIC_KEY_RESIDENT_KEY_MANAGER}")))))
+                .keyauth_credentials(new ArrayList<>(List.of(new HashMap<>(Map.of(
+                        "key", "${WSO2_CRED_SEED05APP_PRODUCTION_KEY}")))))
+                .build();
+        TranslatedConsumer tc = TranslatedConsumer.builder()
+                .wso2SourceId("app-uuid-5").wso2SourceName("Seed05App").consumer(kc).build();
+
+        Map<String, Object> root = parse(builder.build(List.of(), List.of(tc), List.of(), List.of(), List.of()));
+
+        Map<?, ?> c0 = (Map<?, ?>) ((List<?>) root.get("consumers")).get(0);
+        assertEquals("seed05app", c0.get("username"));
+        Map<?, ?> jwt = (Map<?, ?>) ((List<?>) c0.get("jwt_secrets")).get(0);
+        assertEquals("ck-abcdef123", jwt.get("key"));
+        assertEquals("${WSO2_KM_PUBLIC_KEY_RESIDENT_KEY_MANAGER}", jwt.get("rsa_public_key"));
+        Map<?, ?> ka = (Map<?, ?>) ((List<?>) c0.get("keyauth_credentials")).get(0);
+        assertEquals("${WSO2_CRED_SEED05APP_PRODUCTION_KEY}", ka.get("key"));
     }
 
     /** Recursively assert no map in the parsed YAML carries an {@code id} key. */

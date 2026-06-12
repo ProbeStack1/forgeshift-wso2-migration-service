@@ -3,6 +3,8 @@ package com.forgeshift.wso2.migration.translator;
 import com.forgeshift.wso2.migration.config.MigrationProperties;
 import com.forgeshift.wso2.migration.domain.kong.KongConsumer;
 import com.forgeshift.wso2.migration.domain.kong.KongPlugin;
+import com.forgeshift.wso2.migration.reader.CredentialReader;
+import com.forgeshift.wso2.migration.reader.CredentialReader.AppCredential;
 import com.forgeshift.wso2.migration.reader.DiscoverySnapshot;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -31,6 +33,8 @@ public class SubscriptionTranslator {
 
     private final MigrationProperties props;
     private final ThrottlingTierResolver tierResolver;
+    private final CredentialReader credentialReader;
+    private final CredentialTranslator credentialTranslator;
 
     public List<TranslatedConsumer> translate(List<DiscoverySnapshot> applications,
                                               List<DiscoverySnapshot> subscriptions) {
@@ -50,14 +54,27 @@ public class SubscriptionTranslator {
             }
         }
 
+        // Load captured credentials + per-API security schemes once for the whole batch
+        // (keyed by the run's company/tenant, taken from the first application snapshot).
+        Map<String, List<AppCredential>> credsByApp = Map.of();
+        Map<String, Set<String>> schemesByApi = Map.of();
+        DiscoverySnapshot first = appsById.values().stream().findFirst().orElse(null);
+        if (first != null && props.getCredentials().isEnabled()) {
+            credsByApp = credentialReader.readCredentialsByApplication(first.getCompanyName(), first.getWso2Tenant());
+            schemesByApi = credentialReader.readSecuritySchemesByApi(first.getCompanyName(), first.getWso2Tenant());
+        }
+
         List<TranslatedConsumer> out = new ArrayList<>();
         for (DiscoverySnapshot app : appsById.values()) {
-            out.add(translateOne(app, subsByApp.getOrDefault(app.getSourceId(), List.of())));
+            out.add(translateOne(app, subsByApp.getOrDefault(app.getSourceId(), List.of()),
+                    credsByApp, schemesByApi));
         }
         return out;
     }
 
-    private TranslatedConsumer translateOne(DiscoverySnapshot app, List<DiscoverySnapshot> appSubs) {
+    private TranslatedConsumer translateOne(DiscoverySnapshot app, List<DiscoverySnapshot> appSubs,
+                                            Map<String, List<AppCredential>> credsByApp,
+                                            Map<String, Set<String>> schemesByApi) {
         Map<String, Object> p = app.getPayload() != null ? app.getPayload() : Collections.emptyMap();
         String name = app.getSourceName() != null ? app.getSourceName() : str(p.get("name"));
         String owner = str(p.get("owner"));
@@ -91,13 +108,45 @@ public class SubscriptionTranslator {
             warnings.add("Application " + name + " has no subscriptions - Consumer will be created with no API access.");
         }
 
+        // Recreate this app's Kong credentials from the captured OAuth2 keys, matching the
+        // auth plugin each subscribed API uses (oauth2 → jwt_secrets, api_key → keyauth).
+        List<CredentialTranslator.SecretRef> credentialManifest = new ArrayList<>();
+        if (props.getCredentials().isEnabled()) {
+            Set<String> schemes = schemesForSubscribedApis(appSubs, schemesByApi);
+            CredentialTranslator.Result cr = credentialTranslator.attach(
+                    consumer, app.getSourceId(), name,
+                    credsByApp.getOrDefault(app.getSourceId(), List.of()), schemes, tags);
+            warnings.addAll(cr.getWarnings());
+            credentialManifest = cr.getManifest();
+            if (!credentialManifest.isEmpty()) {
+                List<String> refNames = credentialManifest.stream()
+                        .map(CredentialTranslator.SecretRef::getReference).toList();
+                log.info("[credentials] consumer {} needs {} secret reference(s) injected before apply: {}",
+                        slug(name), refNames.size(), refNames);
+            }
+        }
+
         return TranslatedConsumer.builder()
                 .wso2SourceId(app.getSourceId())
                 .wso2SourceName(name)
                 .consumer(consumer)
                 .consumerPlugins(plugins)
                 .warnings(warnings)
+                .credentialManifest(credentialManifest)
                 .build();
+    }
+
+    /** Union of securityScheme values across the APIs this app's subscriptions point at. */
+    private Set<String> schemesForSubscribedApis(List<DiscoverySnapshot> appSubs,
+                                                 Map<String, Set<String>> schemesByApi) {
+        Set<String> schemes = new LinkedHashSet<>();
+        for (DiscoverySnapshot sub : appSubs) {
+            String apiId = mapField(sub.getPayload(), "apiId", null);
+            if (apiId != null && schemesByApi.containsKey(apiId)) {
+                schemes.addAll(schemesByApi.get(apiId));
+            }
+        }
+        return schemes;
     }
 
     private KongPlugin rateLimit(int rpm, List<String> tags) {

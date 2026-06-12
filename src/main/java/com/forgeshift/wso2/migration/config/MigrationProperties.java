@@ -30,6 +30,50 @@ public class MigrationProperties {
     private BundleDownload bundleDownload = new BundleDownload();
     private Deck deck = new Deck();
     private Dependency dependency = new Dependency();
+    private Credentials credentials = new Credentials();
+
+    /**
+     * Recreate Kong consumer credentials from the OAuth2 keys captured by the
+     * assessment service ({@code wso2_application_credential_relations}) so a
+     * migrated service is actually callable. Secrets are emitted as references,
+     * never plaintext in the decK bundle that goes to git.
+     */
+    @Data
+    public static class Credentials {
+        /** Master switch for emitting consumer credentials. */
+        private boolean enabled = true;
+        /** Assessment-owned collection holding the captured OAuth2 keys. */
+        private String credentialCollection = "wso2_application_credential_relations";
+        /** Assessment-owned collection holding each API's securityScheme. */
+        private String apiSecurityCollection = "wso2_api_security_relations";
+        /**
+         * How sensitive credential material is written into the bundle:
+         * <ul>
+         *   <li>{@code ENV} (default) — decK {@code ${VAR}} reference; the value goes
+         *       in the returned manifest for the pipeline to inject at apply time.</li>
+         *   <li>{@code VAULT} — Kong Vault reference {@code {vault://<backend>/<ref>}}
+         *       resolved by the gateway at runtime.</li>
+         *   <li>{@code INLINE} — raw value in the YAML. DEV ONLY — never for a
+         *       git-committed bundle.</li>
+         * </ul>
+         */
+        private SecretHandling secretHandling = SecretHandling.ENV;
+        /** Prefix for generated env-var names ({@code ENV} mode). */
+        private String envVarPrefix = "WSO2_CRED_";
+        /** Vault backend name in a {@code {vault://<backend>/...}} reference ({@code VAULT} mode). */
+        private String vaultBackend = "env";
+        /**
+         * Reference (env var or vault key) for the WSO2 Key Manager's RSA public
+         * signing cert, used as {@code jwt_secrets.rsa_public_key}. One per Key
+         * Manager, shared across consumers; not captured from WSO2, so the operator
+         * supplies it once. {@code {km}} is replaced with the Key Manager name slug.
+         */
+        private String keyManagerPublicKeyRef = "WSO2_KM_PUBLIC_KEY_{km}";
+        /** JWT claim the {@code jwt} plugin matches a consumer's key against (WSO2 puts the client id in azp). */
+        private String jwtKeyClaim = "azp";
+
+        public enum SecretHandling { ENV, VAULT, INLINE }
+    }
 
     /** Dependency-aware migration: auto-include dependencies + skip what's already in Kong. */
     @Data
@@ -40,6 +84,18 @@ public class MigrationProperties {
         private String assessmentResourceInfoCollection = "wso2_assessment_resource_info";
         /** When true, drop resources already present in Kong (by wso2-source-id tag) from the run. */
         private boolean excludeAlreadyMigrated = true;
+        /**
+         * Also fold the relationship-sync edge collections (the access-graph's store,
+         * refreshed by {@code POST /wso2/relationships/sync}) into the dependency graph.
+         * The assessment's resourceDependencies and the relation sync capture the same
+         * facts at different times; merging means a subscription created after the last
+         * assessment run still pulls its application into the migration.
+         */
+        private boolean useRelationGraph = true;
+        /** Collection (owned by the assessment service) holding application→subscription edges. */
+        private String relationAppSubscriptionCollection = "wso2_app_subscription_relations";
+        /** Collection (owned by the assessment service) holding apiProduct→api edges. */
+        private String relationApiProductCollection = "wso2_api_product_relations";
     }
 
     @Data

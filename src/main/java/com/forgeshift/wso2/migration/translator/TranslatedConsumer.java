@@ -21,4 +21,10 @@ public class TranslatedConsumer {
     /** Consumer-scoped plugins (e.g. rate-limiting for a specific app's tier). */
     @Builder.Default private List<KongPlugin> consumerPlugins = new ArrayList<>();
     @Builder.Default private List<String> warnings = new ArrayList<>();
+    /**
+     * Secret values to inject for the {@code ${ENV}} / {@code {vault://...}}
+     * references this consumer's credentials left in the bundle. SENSITIVE —
+     * surfaced for the apply pipeline, never written into the git-committed bundle.
+     */
+    @Builder.Default private List<CredentialTranslator.SecretRef> credentialManifest = new ArrayList<>();
 }
