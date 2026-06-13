@@ -8,6 +8,7 @@ import com.forgeshift.wso2.migration.deck.GitPublisher;
 import com.forgeshift.wso2.migration.deck.GitPushResult;
 import com.forgeshift.wso2.migration.domain.MigrationJob;
 import com.forgeshift.wso2.migration.reader.KongKonnectCredentials;
+import com.forgeshift.wso2.migration.repository.EntityMappingRepository;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
@@ -41,9 +42,10 @@ class DeckBundleDeployerTest {
         MigrationProperties props = new MigrationProperties();
         props.getDeck().getGit().setEnabled(true);
 
-        DeckBundleDeployer deployer = new DeckBundleDeployer(yaml, bundleBuilder, git, props);
+        EntityMappingRepository mappingRepo = mock(EntityMappingRepository.class);
+        DeckBundleDeployer deployer = new DeckBundleDeployer(yaml, bundleBuilder, git, props, mappingRepo);
 
-        when(yaml.buildFiles(any(), any(), any(), any(), any(), any()))
+        when(yaml.buildFiles(any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(Map.of("kong/dev/api-foo.yaml", "services: []"));
 
         Map<String, String> repoFiles = new LinkedHashMap<>();

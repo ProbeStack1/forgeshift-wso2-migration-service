@@ -12,8 +12,10 @@ import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Reads the assessment service's relationship-sync edge collections — the same
@@ -62,6 +64,21 @@ public class RelationGraphReader {
             Query byTenant = Query.query(Criteria.where("companyName").is(companyName)
                     .and("wso2Tenant").is(wso2Tenant));
 
+            // Read product edges FIRST: add each member API's apiProducts link, and remember which
+            // member APIs each product carries so a subscription ON the product can be attributed
+            // back to those APIs below (the via-product join).
+            List<Document> productEdges = mongoTemplate.find(byTenant, Document.class,
+                    props.getDependency().getRelationApiProductCollection());
+            Map<String, Set<String>> productMemberApiNames = new HashMap<>();   // apiProductId -> [member apiName]
+            for (Document edge : productEdges) {
+                String productId = edge.getString("apiProductId");
+                String memberApiName = edge.getString("apiName");
+                added += add(graph, memberApiName, REL_API_PRODUCTS, productId);
+                if (StringUtils.hasText(productId) && StringUtils.hasText(memberApiName)) {
+                    productMemberApiNames.computeIfAbsent(productId, k -> new LinkedHashSet<>()).add(memberApiName);
+                }
+            }
+
             List<Document> appSubEdges = mongoTemplate.find(byTenant, Document.class,
                     props.getDependency().getRelationAppSubscriptionCollection());
             for (Document edge : appSubEdges) {
@@ -74,13 +91,15 @@ public class RelationGraphReader {
                 added += add(graph, appName, REL_APIS, apiId);
                 // api → the subscriptions on it (DependencyExpander derives the apps from these)
                 added += add(graph, apiName, REL_SUBSCRIPTIONS, subId);
-            }
-
-            List<Document> productEdges = mongoTemplate.find(byTenant, Document.class,
-                    props.getDependency().getRelationApiProductCollection());
-            for (Document edge : productEdges) {
-                added += add(graph, edge.getString("apiName"), REL_API_PRODUCTS,
-                        edge.getString("apiProductId"));
+                // via-product join: when this subscription is on an API PRODUCT, attribute it to each
+                // member API too, so an API reached only through a product still pulls in the
+                // subscribing app as a consumer (otherwise the consumer + its credential are missed).
+                Set<String> members = productMemberApiNames.get(apiId);
+                if (members != null) {
+                    for (String memberApiName : members) {
+                        added += add(graph, memberApiName, REL_SUBSCRIPTIONS, subId);
+                    }
+                }
             }
 
             if (added > 0) {

@@ -174,6 +174,43 @@ class DeckYamlBuilderTest {
     }
 
     @Test
+    void pinsRealKongIdsSoApplyUpdatesInsteadOfConflicting() {
+        // An API + consumer already in Kong: passing their real Kong ids must stamp them on the
+        // top-level service/consumer so `deck gateway apply` matches by id and UPDATES (no conflict).
+        KongService svc = KongService.builder().name("seed05apikeybronze-1-0-0").host("httpbin.org")
+                .port(443).protocol("https").tags(List.of("wso2-source-id:api-5")).build();
+        TranslatedApi api = TranslatedApi.builder().wso2SourceId("api-5").service(svc).build();
+        KongConsumer kc = KongConsumer.builder().username("defaultapplication").custom_id("app-d").build();
+        TranslatedConsumer consumer = TranslatedConsumer.builder()
+                .wso2SourceId("app-d").wso2SourceName("DefaultApplication").consumer(kc).build();
+
+        Map<String, String> kongIds = Map.of(
+                "api-5|SERVICE", "11111111-1111-1111-1111-111111111111",
+                "app-d|CONSUMER", "22222222-2222-2222-2222-222222222222");
+
+        Map<String, Object> root = parse(builder.build(
+                List.of(api), List.of(consumer), List.of(), List.of(), List.of(), kongIds));
+
+        Map<?, ?> s0 = (Map<?, ?>) ((List<?>) root.get("services")).get(0);
+        assertEquals("11111111-1111-1111-1111-111111111111", s0.get("id"), "service gets its real Kong id");
+        Map<?, ?> c0 = (Map<?, ?>) ((List<?>) root.get("consumers")).get(0);
+        assertEquals("22222222-2222-2222-2222-222222222222", c0.get("id"), "consumer gets its real Kong id");
+    }
+
+    @Test
+    void omitsIdForEntitiesNotYetInKong() {
+        // No mapping for this API → no id emitted → apply CREATES it (and never deletes others).
+        KongService svc = KongService.builder().name("new-api-1-0").host("h").port(80).protocol("http").build();
+        TranslatedApi api = TranslatedApi.builder().wso2SourceId("api-new").service(svc).build();
+
+        Map<String, Object> root = parse(builder.build(
+                List.of(api), List.of(), List.of(), List.of(), List.of(), Map.of("other|SERVICE", "x")));
+
+        Map<?, ?> s0 = (Map<?, ?>) ((List<?>) root.get("services")).get(0);
+        assertFalse(s0.containsKey("id"), "unmapped entity carries no id so apply creates it");
+    }
+
+    @Test
     void emitsConsumerCredentialsNestedUnderTheConsumer() {
         KongConsumer kc = KongConsumer.builder()
                 .username("seed05app").custom_id("app-uuid-5")

@@ -63,6 +63,23 @@ public class DeckYamlBuilder {
                         List<TranslatedCertificate> certificates,
                         List<TranslatedApiProduct> products,
                         List<TranslatedMediationPolicy> mediations) {
+        return build(apis, consumers, certificates, products, mediations, Map.of());
+    }
+
+    /**
+     * @param kongIds real Kong ids of already-deployed entities, keyed
+     *                {@code "<wso2SourceId>|<KONG_ENTITY_TYPE>"} (SERVICE / CONSUMER /
+     *                UPSTREAM / CA_CERTIFICATE). When present, the id is emitted on the
+     *                entity so {@code deck gateway apply} matches and UPDATES it instead of
+     *                failing "entity already exists" — apply never deletes, so other services
+     *                are untouched. New entities (no mapping) are left for apply to create.
+     */
+    public String build(List<TranslatedApi> apis,
+                        List<TranslatedConsumer> consumers,
+                        List<TranslatedCertificate> certificates,
+                        List<TranslatedApiProduct> products,
+                        List<TranslatedMediationPolicy> mediations,
+                        Map<String, String> kongIds) {
 
         Map<String, String> svcNames = serviceNames(apis);
         Map<String, Object> root = newRoot();
@@ -72,14 +89,19 @@ public class DeckYamlBuilder {
         if (apis != null) {
             for (TranslatedApi a : apis) {
                 if (a.getService() == null) continue;
-                services.add(serviceNode(a));
+                Map<String, Object> svc = serviceNode(a);
+                injectKongId(svc, kongIds, a.getWso2SourceId(), "SERVICE");
+                services.add(svc);
                 Map<String, Object> up = upstreamNode(a);
-                if (up != null) upstreams.add(up);
+                if (up != null) {
+                    injectKongId(up, kongIds, a.getWso2SourceId(), "UPSTREAM");
+                    upstreams.add(up);
+                }
             }
         }
 
-        List<Object> consumerList = consumerNodes(consumers);
-        List<Object> certList = certNodes(certificates);
+        List<Object> consumerList = consumerNodes(consumers, kongIds);
+        List<Object> certList = certNodes(certificates, kongIds);
         List<Object> topRoutes = productRouteNodes(products, svcNames);
         List<Object> topPlugins = mediationPluginNodes(mediations, svcNames);
 
@@ -108,6 +130,17 @@ public class DeckYamlBuilder {
                                           List<TranslatedCertificate> certificates,
                                           List<TranslatedApiProduct> products,
                                           List<TranslatedMediationPolicy> mediations) {
+        return buildFiles(env, apis, consumers, certificates, products, mediations, Map.of());
+    }
+
+    /** See {@link #build(List, List, List, List, List, Map)} for the meaning of {@code kongIds}. */
+    public Map<String, String> buildFiles(String env,
+                                          List<TranslatedApi> apis,
+                                          List<TranslatedConsumer> consumers,
+                                          List<TranslatedCertificate> certificates,
+                                          List<TranslatedApiProduct> products,
+                                          List<TranslatedMediationPolicy> mediations,
+                                          Map<String, String> kongIds) {
         String dir = props.getDeck().getKongConfigDirTemplate().replace("{env}", env);
         // Single-API migration → isolate every file for this API under kong/<env>/<api-slug>/ so the
         // pipeline applies ONLY this API. An unrelated API's leftover file (a different directory)
@@ -132,9 +165,14 @@ public class DeckYamlBuilder {
             for (TranslatedApi a : apis) {
                 if (a.getService() == null) continue;
                 Map<String, Object> root = newRoot();
-                root.put("services", List.of(serviceNode(a)));
+                Map<String, Object> svc = serviceNode(a);
+                injectKongId(svc, kongIds, a.getWso2SourceId(), "SERVICE");
+                root.put("services", List.of(svc));
                 Map<String, Object> up = upstreamNode(a);
-                if (up != null) root.put("upstreams", List.of(up));
+                if (up != null) {
+                    injectKongId(up, kongIds, a.getWso2SourceId(), "UPSTREAM");
+                    root.put("upstreams", List.of(up));
+                }
                 List<Object> medPlugins = mediationPluginNodes(medByApi.get(a.getWso2SourceId()), svcNames);
                 if (!medPlugins.isEmpty()) root.put("plugins", medPlugins);
                 files.put(dir + "/api-" + fileSlug(a.getService().getName(), a.getWso2SourceId()) + ".yaml",
@@ -142,14 +180,14 @@ public class DeckYamlBuilder {
             }
         }
 
-        List<Object> consumerList = consumerNodes(consumers);
+        List<Object> consumerList = consumerNodes(consumers, kongIds);
         if (!consumerList.isEmpty()) {
             Map<String, Object> root = newRoot();
             root.put("consumers", consumerList);
             files.put(dir + "/consumers.yaml", dump(root));
         }
 
-        List<Object> certList = certNodes(certificates);
+        List<Object> certList = certNodes(certificates, kongIds);
         if (!certList.isEmpty()) {
             Map<String, Object> root = newRoot();
             root.put("ca_certificates", certList);
@@ -207,7 +245,7 @@ public class DeckYamlBuilder {
         return up;
     }
 
-    private List<Object> consumerNodes(List<TranslatedConsumer> consumers) {
+    private List<Object> consumerNodes(List<TranslatedConsumer> consumers, Map<String, String> kongIds) {
         List<Object> out = new ArrayList<>();
         if (consumers == null) return out;
         for (TranslatedConsumer c : consumers) {
@@ -215,6 +253,7 @@ public class DeckYamlBuilder {
             Map<String, Object> cm = toMap(c.getConsumer());
             Object cid = cm.getOrDefault("username", cm.get("custom_id"));
             putId(cm, "consumer:" + cid);
+            injectKongId(cm, kongIds, c.getWso2SourceId(), "CONSUMER");
             List<Object> cps = pluginMaps(c.getConsumerPlugins(), "consumer:" + cid);
             if (!cps.isEmpty()) cm.put("plugins", cps);
             out.add(cm);
@@ -222,13 +261,29 @@ public class DeckYamlBuilder {
         return out;
     }
 
-    private List<Object> certNodes(List<TranslatedCertificate> certificates) {
+    /**
+     * Override an entity's {@code id} with the real Kong id of the already-deployed entity
+     * (recovered into {@code entity_mappings} by {@link DeckResultMapper} after a prior apply),
+     * so {@code deck gateway apply} matches by id and UPDATES it. No mapping → leave whatever
+     * {@link #putId} set (none by default), so apply creates the new entity. apply never deletes.
+     */
+    private void injectKongId(Map<String, Object> node, Map<String, String> kongIds,
+                              String wso2SourceId, String kongEntityType) {
+        if (node == null || kongIds == null || !StringUtils.hasText(wso2SourceId)) return;
+        String realId = kongIds.get(wso2SourceId + "|" + kongEntityType);
+        if (StringUtils.hasText(realId)) {
+            node.put("id", realId);
+        }
+    }
+
+    private List<Object> certNodes(List<TranslatedCertificate> certificates, Map<String, String> kongIds) {
         List<Object> out = new ArrayList<>();
         if (certificates == null) return out;
         for (TranslatedCertificate tc : certificates) {
             if (tc.getCaCertificate() == null || !StringUtils.hasText(tc.getCaCertificate().getCert())) continue;
             Map<String, Object> cm = toMap(tc.getCaCertificate());
             putId(cm, "ca:" + tc.getCaCertificate().getCert());
+            injectKongId(cm, kongIds, tc.getWso2SourceId(), "CA_CERTIFICATE");
             out.add(cm);
         }
         return out;
