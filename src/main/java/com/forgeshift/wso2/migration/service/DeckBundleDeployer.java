@@ -1,5 +1,6 @@
 package com.forgeshift.wso2.migration.service;
 
+import com.forgeshift.wso2.migration.client.KonnectAdminClient;
 import com.forgeshift.wso2.migration.config.MigrationProperties;
 import com.forgeshift.wso2.migration.deck.BundleBuilder;
 import com.forgeshift.wso2.migration.deck.BundleResult;
@@ -42,6 +43,7 @@ public class DeckBundleDeployer {
     private final GitPublisher gitPublisher;
     private final MigrationProperties props;
     private final EntityMappingRepository mappingRepo;
+    private final KonnectAdminClient konnectAdminClient;
 
     /** Single combined kong.yaml (used by dry-run / preview). */
     public String buildYaml(List<TranslatedApi> apis, List<TranslatedConsumer> consumers,
@@ -56,10 +58,10 @@ public class DeckBundleDeployer {
                                     List<TranslatedCertificate> certs, List<TranslatedApiProduct> products,
                                     List<TranslatedMediationPolicy> mediations) {
         String env = props.getDeck().getEnvName();
-        // Real Kong ids of entities already deployed in THIS control plane (from prior applies),
-        // so re-applying an already-migrated entity UPDATES it (match by id) instead of failing
-        // "entity already exists". apply never deletes, so other services stay untouched.
-        Map<String, String> kongIds = realKongIds(job, apis, consumers, certs, products);
+        // Real Kong ids of entities already deployed in THIS control plane, so re-applying an
+        // already-migrated entity UPDATES it (match by id) instead of failing "entity already
+        // exists". apply never deletes, so other services stay untouched.
+        Map<String, String> kongIds = realKongIds(creds, job, apis, consumers, certs, products);
         var kongFiles = yamlBuilder.buildFiles(env, apis, consumers, certs, products, mediations, kongIds);
 
         String cpName = creds != null && StringUtils.hasText(creds.getControlPlaneName())
@@ -111,12 +113,26 @@ public class DeckBundleDeployer {
      * {@code "<wso2SourceId>|<KONG_ENTITY_TYPE>"} for the top-level types decK can collide on
      * (SERVICE / UPSTREAM / CONSUMER / CA_CERTIFICATE). Empty when nothing was migrated before.
      */
-    private Map<String, String> realKongIds(MigrationJob job, List<TranslatedApi> apis,
-                                            List<TranslatedConsumer> consumers,
-                                            List<TranslatedCertificate> certs,
-                                            List<TranslatedApiProduct> products) {
+    private Map<String, String> realKongIds(KongKonnectCredentials creds, MigrationJob job,
+                                            List<TranslatedApi> apis, List<TranslatedConsumer> consumers,
+                                            List<TranslatedCertificate> certs, List<TranslatedApiProduct> products) {
         String cpId = job.getControlPlaneId();
         if (!StringUtils.hasText(cpId)) return Map.of();
+
+        // Prefer a LIVE Kong scan (authoritative — never stale the way entity_mappings can be after
+        // a control-plane reset). Only fall back to entity_mappings when the live scan yields nothing
+        // (e.g. Konnect token absent); a missing id just means apply creates the entity.
+        try {
+            Map<String, String> live = konnectAdminClient.collectKongIdsBySourceType(creds);
+            if (!live.isEmpty()) {
+                log.info("Pinning {} existing Kong id(s) (live scan) for job {} so apply updates instead of conflicting.",
+                        live.size(), job.getId());
+                return live;
+            }
+        } catch (Exception e) {
+            log.warn("Live Kong id scan failed for job {} ({}): {} — falling back to entity_mappings.",
+                    job.getId(), cpId, e.getMessage());
+        }
 
         Set<String> sourceIds = new LinkedHashSet<>();
         if (apis != null) apis.forEach(a -> { if (a.getWso2SourceId() != null) sourceIds.add(a.getWso2SourceId()); });

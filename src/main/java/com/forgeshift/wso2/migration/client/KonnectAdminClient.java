@@ -403,6 +403,65 @@ public class KonnectAdminClient {
         return ids;
     }
 
+    /**
+     * Live scan of the top-level Kong entities already migrated into this control plane, returning
+     * a map keyed {@code "<wso2SourceId>|<KONG_ENTITY_TYPE>"} → the real Kong id. The migration
+     * stamps these ids on the re-generated bundle so {@code deck gateway apply} matches existing
+     * entities by id and UPDATES them (apply never deletes) instead of failing "entity already
+     * exists". Kong is authoritative — this never goes stale the way {@code entity_mappings} can.
+     */
+    public Map<String, String> collectKongIdsBySourceType(KongKonnectCredentials creds) {
+        Map<String, String> out = new java.util.LinkedHashMap<>();
+        if (creds == null || !StringUtils.hasText(creds.getKonnectAccessToken())
+                || !StringUtils.hasText(creds.getControlPlaneId())) {
+            return out;
+        }
+        for (KongEntityType type : List.of(KongEntityType.SERVICE, KongEntityType.CONSUMER,
+                KongEntityType.UPSTREAM, KongEntityType.CA_CERTIFICATE)) {
+            try {
+                collectTaggedKongIds(creds, entityPath(creds, type, null), type.name(), out);
+            } catch (Exception e) {
+                log.warn("Kong id scan failed for {}: {}", type, e.getMessage());
+            }
+        }
+        return out;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void collectTaggedKongIds(KongKonnectCredentials creds, String endpoint, String typeName,
+                                      Map<String, String> out) {
+        String migratedBy = props.getTranslation().getMigratedByTag();
+        String prefix = props.getTranslation().getTagPrefix() + ":";
+        String url = endpoint + "?tags=" + migratedBy + "&size=1000";
+        int guard = 0;
+        while (url != null && guard++ < 50) {
+            Map<String, Object> body = webClient.get()
+                    .uri(url)
+                    .header("Authorization", "Bearer " + creds.getKonnectAccessToken())
+                    .accept(MediaType.APPLICATION_JSON)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .timeout(Duration.ofSeconds(props.getKonnect().getRequestTimeoutSeconds()))
+                    .block();
+            if (body == null) return;
+            if (body.get("data") instanceof List<?> items) {
+                for (Object item : items) {
+                    if (!(item instanceof Map<?, ?> m) || !(m.get("id") instanceof String id)
+                            || !(m.get("tags") instanceof List<?> tags)) continue;
+                    for (Object tag : tags) {
+                        if (tag != null && tag.toString().startsWith(prefix)) {
+                            out.putIfAbsent(tag.toString().substring(prefix.length()) + "|" + typeName, id);
+                        }
+                    }
+                }
+            }
+            Object offset = body.get("offset");
+            url = (offset instanceof String s && !s.isBlank())
+                    ? endpoint + "?tags=" + migratedBy + "&size=1000&offset=" + s
+                    : null;
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private void collectTaggedSourceIds(KongKonnectCredentials creds, String endpoint, java.util.Set<String> out) {
         String migratedBy = props.getTranslation().getMigratedByTag();

@@ -6,6 +6,7 @@ import com.forgeshift.wso2.migration.deck.BundleResult;
 import com.forgeshift.wso2.migration.deck.DeckYamlBuilder;
 import com.forgeshift.wso2.migration.deck.GitPublisher;
 import com.forgeshift.wso2.migration.deck.GitPushResult;
+import com.forgeshift.wso2.migration.client.KonnectAdminClient;
 import com.forgeshift.wso2.migration.domain.MigrationJob;
 import com.forgeshift.wso2.migration.reader.KongKonnectCredentials;
 import com.forgeshift.wso2.migration.repository.EntityMappingRepository;
@@ -43,7 +44,8 @@ class DeckBundleDeployerTest {
         props.getDeck().getGit().setEnabled(true);
 
         EntityMappingRepository mappingRepo = mock(EntityMappingRepository.class);
-        DeckBundleDeployer deployer = new DeckBundleDeployer(yaml, bundleBuilder, git, props, mappingRepo);
+        KonnectAdminClient konnectAdminClient = mock(KonnectAdminClient.class);
+        DeckBundleDeployer deployer = new DeckBundleDeployer(yaml, bundleBuilder, git, props, mappingRepo, konnectAdminClient);
 
         when(yaml.buildFiles(any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(Map.of("kong/dev/api-foo.yaml", "services: []"));
