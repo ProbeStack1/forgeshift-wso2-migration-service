@@ -154,6 +154,10 @@ public class CredentialTranslator {
         Map<String, Object> jwt = new LinkedHashMap<>();
         jwt.put("key", c.getConsumerKey());
         jwt.put("algorithm", "RS256");
+        // decK's declarative schema requires a non-empty `secret` on EVERY jwt credential. For RS256
+        // Kong verifies with rsa_public_key and ignores `secret`, so we satisfy the schema with the
+        // (already-public) consumer key rather than inlining the real OAuth2 client secret.
+        jwt.put("secret", c.getConsumerKey());
         if (StringUtils.hasText(inlinePem)) {
             jwt.put("rsa_public_key", inlinePem);   // captured from /oauth2/jwks — self-contained
         } else {

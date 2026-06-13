@@ -118,6 +118,8 @@ class CredentialTranslatorTest {
         assertThat(c.getJwt_secrets()).hasSize(1);
         assertThat(c.getJwt_secrets().get(0)).containsEntry("rsa_public_key", pem);
         assertThat(c.getJwt_secrets().get(0).get("rsa_public_key").toString()).doesNotContain("${");
+        // decK requires a non-empty `secret` on every jwt credential (unused for RS256)
+        assertThat(c.getJwt_secrets().get(0).get("secret")).isEqualTo("ck-abcdef123");
     }
 
     @Test
