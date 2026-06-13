@@ -269,8 +269,23 @@ public class DeckYamlBuilder {
      */
     private void injectKongId(Map<String, Object> node, Map<String, String> kongIds,
                               String wso2SourceId, String kongEntityType) {
-        if (node == null || kongIds == null || !StringUtils.hasText(wso2SourceId)) return;
-        String realId = kongIds.get(wso2SourceId + "|" + kongEntityType);
+        if (node == null || kongIds == null) return;
+        String realId = null;
+        // Prefer Kong's UNIQUE business key (service/upstream name, consumer username). It is
+        // unambiguous even when an orphan entity from an older run carries the same wso2-source-id
+        // tag — matching on that tag alone could pin the orphan's id and make apply think the real
+        // entity is new ("entity already exists"). Source-id is only a fallback (e.g. CA certs).
+        Object name = node.get("name");
+        Object username = node.get("username");
+        if (name instanceof String n && StringUtils.hasText(n)) {
+            realId = kongIds.get(kongEntityType + "|name:" + n);
+        }
+        if (realId == null && username instanceof String u && StringUtils.hasText(u)) {
+            realId = kongIds.get(kongEntityType + "|username:" + u);
+        }
+        if (realId == null && StringUtils.hasText(wso2SourceId)) {
+            realId = kongIds.get(wso2SourceId + "|" + kongEntityType);
+        }
         if (StringUtils.hasText(realId)) {
             node.put("id", realId);
         }

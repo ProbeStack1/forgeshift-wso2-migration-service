@@ -446,11 +446,23 @@ public class KonnectAdminClient {
             if (body == null) return;
             if (body.get("data") instanceof List<?> items) {
                 for (Object item : items) {
-                    if (!(item instanceof Map<?, ?> m) || !(m.get("id") instanceof String id)
-                            || !(m.get("tags") instanceof List<?> tags)) continue;
-                    for (Object tag : tags) {
-                        if (tag != null && tag.toString().startsWith(prefix)) {
-                            out.putIfAbsent(tag.toString().substring(prefix.length()) + "|" + typeName, id);
+                    if (!(item instanceof Map<?, ?> m) || !(m.get("id") instanceof String id)) continue;
+                    // Key on Kong's UNIQUE business key (service/upstream name, consumer username) —
+                    // these are unique per control plane, so they can't be confused with an orphan
+                    // entity that happens to share the same wso2-source-id tag (e.g. from an older
+                    // migration run with a different naming scheme).
+                    if (m.get("name") instanceof String n && !n.isBlank()) {
+                        out.putIfAbsent(typeName + "|name:" + n, id);
+                    }
+                    if (m.get("username") instanceof String u && !u.isBlank()) {
+                        out.putIfAbsent(typeName + "|username:" + u, id);
+                    }
+                    // Fallback for entities without a unique name (CA certificates): the source-id tag.
+                    if (m.get("tags") instanceof List<?> tags) {
+                        for (Object tag : tags) {
+                            if (tag != null && tag.toString().startsWith(prefix)) {
+                                out.putIfAbsent(tag.toString().substring(prefix.length()) + "|" + typeName, id);
+                            }
                         }
                     }
                 }

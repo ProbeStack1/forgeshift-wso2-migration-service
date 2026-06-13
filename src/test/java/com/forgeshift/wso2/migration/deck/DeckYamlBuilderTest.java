@@ -198,6 +198,34 @@ class DeckYamlBuilderTest {
     }
 
     @Test
+    void prefersNameMatchOverSourceIdTag_soOrphanIdsDontWin() {
+        // An older migration run left an orphan service that still carries THIS API's wso2-source-id
+        // tag. The live Kong scan therefore offers two ids: an ambiguous "api-5|SERVICE" (could be the
+        // orphan) and the unambiguous "SERVICE|name:<realName>". The name match must win — otherwise
+        // apply pins the orphan id and the real service looks new → "entity already exists".
+        KongService svc = KongService.builder().name("seed05apikeybronze-1-0-0").host("httpbin.org")
+                .port(443).protocol("https").build();
+        TranslatedApi api = TranslatedApi.builder().wso2SourceId("api-5").service(svc).build();
+        KongConsumer kc = KongConsumer.builder().username("defaultapplication").custom_id("app-d").build();
+        TranslatedConsumer consumer = TranslatedConsumer.builder()
+                .wso2SourceId("app-d").wso2SourceName("DefaultApplication").consumer(kc).build();
+
+        Map<String, String> kongIds = Map.of(
+                "api-5|SERVICE", "00000000-0000-0000-0000-0000000orphan",                  // ambiguous tag (orphan)
+                "SERVICE|name:seed05apikeybronze-1-0-0", "11111111-1111-1111-1111-111111111111",  // unique name (real)
+                "CONSUMER|username:defaultapplication", "22222222-2222-2222-2222-222222222222");
+
+        Map<String, Object> root = parse(builder.build(
+                List.of(api), List.of(consumer), List.of(), List.of(), List.of(), kongIds));
+
+        Map<?, ?> s0 = (Map<?, ?>) ((List<?>) root.get("services")).get(0);
+        assertEquals("11111111-1111-1111-1111-111111111111", s0.get("id"),
+                "service matched by unique name, not the orphan-sharing source-id tag");
+        Map<?, ?> c0 = (Map<?, ?>) ((List<?>) root.get("consumers")).get(0);
+        assertEquals("22222222-2222-2222-2222-222222222222", c0.get("id"), "consumer matched by username");
+    }
+
+    @Test
     void omitsIdForEntitiesNotYetInKong() {
         // No mapping for this API → no id emitted → apply CREATES it (and never deletes others).
         KongService svc = KongService.builder().name("new-api-1-0").host("h").port(80).protocol("http").build();
