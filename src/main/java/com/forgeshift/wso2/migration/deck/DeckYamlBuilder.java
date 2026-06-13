@@ -9,6 +9,7 @@ import com.forgeshift.wso2.migration.translator.TranslatedApiProduct;
 import com.forgeshift.wso2.migration.translator.TranslatedCertificate;
 import com.forgeshift.wso2.migration.translator.TranslatedConsumer;
 import com.forgeshift.wso2.migration.translator.TranslatedMediationPolicy;
+import com.forgeshift.wso2.migration.translator.Wso2SecuritySchemes;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -106,6 +107,7 @@ public class DeckYamlBuilder {
         }
 
         List<Object> consumerList = consumerNodes(consumers, kongIds);
+        if (usesAnonymousAuth(apis, products)) consumerList.add(anonymousConsumerNode());
         List<Object> certList = certNodes(certificates, kongIds);
 
         if (!services.isEmpty()) root.put("services", services);
@@ -179,6 +181,7 @@ public class DeckYamlBuilder {
         }
 
         List<Object> consumerList = consumerNodes(consumers, kongIds);
+        if (usesAnonymousAuth(apis, products)) consumerList.add(anonymousConsumerNode());
         if (!consumerList.isEmpty()) {
             Map<String, Object> root = newRoot();
             root.put("consumers", consumerList);
@@ -260,6 +263,61 @@ public class DeckYamlBuilder {
             out.add(cm);
         }
         return out;
+    }
+
+    /** True when any auth plugin uses the anonymous fallback (an OR-auth route) — the shared
+     *  anonymous consumer + its deny plugin must then be emitted so requests satisfying NEITHER
+     *  scheme are rejected. */
+    private boolean usesAnonymousAuth(List<TranslatedApi> apis, List<TranslatedApiProduct> products) {
+        if (apis != null) {
+            for (TranslatedApi a : apis) {
+                if (pluginsUseAnonymous(a.getServicePlugins())) return true;
+                if (a.getRoutePlugins() != null) {
+                    for (List<KongPlugin> rp : a.getRoutePlugins().values()) {
+                        if (pluginsUseAnonymous(rp)) return true;
+                    }
+                }
+            }
+        }
+        if (products != null) {
+            for (TranslatedApiProduct prod : products) {
+                if (prod.getRoutes() == null) continue;
+                for (TranslatedApiProduct.ProductRoute pr : prod.getRoutes()) {
+                    if (pluginsUseAnonymous(pr.getPlugins())) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean pluginsUseAnonymous(List<KongPlugin> plugins) {
+        if (plugins == null) return false;
+        for (KongPlugin pl : plugins) {
+            if (pl != null && pl.getConfig() != null && pl.getConfig().get("anonymous") != null) return true;
+        }
+        return false;
+    }
+
+    /** The shared anonymous consumer (fixed id so {@code config.anonymous} resolves) plus a
+     *  consumer-scoped request-termination that 401s any request which fell through to it — i.e.
+     *  one that satisfied NEITHER auth method. A request authenticated by jwt OR key-auth becomes
+     *  its real consumer and never reaches this, giving WSO2's optional multi-auth its OR meaning. */
+    private Map<String, Object> anonymousConsumerNode() {
+        List<String> tags = List.of(props.getTranslation().getMigratedByTag(), "wso2-anonymous");
+        Map<String, Object> deny = new LinkedHashMap<>();
+        deny.put("name", "request-termination");
+        Map<String, Object> cfg = new LinkedHashMap<>();
+        cfg.put("status_code", 401);
+        cfg.put("message", "No authentication credentials found");
+        deny.put("config", cfg);
+        deny.put("tags", tags);
+
+        Map<String, Object> consumer = new LinkedHashMap<>();
+        consumer.put("username", Wso2SecuritySchemes.ANONYMOUS_USERNAME);
+        consumer.put("id", Wso2SecuritySchemes.ANONYMOUS_CONSUMER_ID);
+        consumer.put("tags", tags);
+        consumer.put("plugins", List.of(deny));
+        return consumer;
     }
 
     /**

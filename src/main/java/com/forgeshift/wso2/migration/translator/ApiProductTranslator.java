@@ -132,13 +132,27 @@ public class ApiProductTranslator {
             }
         }
 
-        // 2) Security: oauth2 → jwt, api_key → key-auth
+        // 2) Security — match scheme tokens EXACTLY (the WSO2 mandatory/optional flag contains the
+        // substring "api_key" but is NOT that scheme; see Wso2SecuritySchemes). Use the same azp jwt
+        // keying the API uses so the product context route keys per-consumer like the member API does.
         List<String> security = stringList(p.get("securityScheme"));
         if (security != null) {
-            boolean oauth = security.stream().anyMatch(s -> s != null && s.toLowerCase().contains("oauth2"));
-            boolean apiKey = security.stream().anyMatch(s -> s != null && s.toLowerCase().contains("api_key"));
-            if (oauth) plugins.add(plugin("jwt", null, baseTags));
-            if (apiKey) plugins.add(plugin("key-auth", null, baseTags));
+            boolean oauth = Wso2SecuritySchemes.hasOauth2(security);
+            boolean apiKey = Wso2SecuritySchemes.hasApiKey(security);
+            boolean orAuth = Wso2SecuritySchemes.isEitherAuthAccepted(security);
+            if (oauth) {
+                Map<String, Object> jwtCfg = new LinkedHashMap<>();
+                jwtCfg.put("key_claim_name", props.getCredentials().getJwtKeyClaim());
+                jwtCfg.put("claims_to_verify", List.of("exp"));
+                if (orAuth) jwtCfg.put("anonymous", Wso2SecuritySchemes.ANONYMOUS_CONSUMER_ID);
+                plugins.add(plugin("jwt", jwtCfg, baseTags));
+            }
+            if (apiKey) {
+                Map<String, Object> kaCfg = orAuth
+                        ? new LinkedHashMap<>(Map.of("anonymous", Wso2SecuritySchemes.ANONYMOUS_CONSUMER_ID))
+                        : null;
+                plugins.add(plugin("key-auth", kaCfg, baseTags));
+            }
         }
 
         // 3) CORS

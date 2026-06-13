@@ -1,6 +1,7 @@
 package com.forgeshift.wso2.migration.translator;
 
 import com.forgeshift.wso2.migration.config.MigrationProperties;
+import com.forgeshift.wso2.migration.domain.kong.KongPlugin;
 import com.forgeshift.wso2.migration.reader.DiscoverySnapshot;
 import org.junit.jupiter.api.Test;
 
@@ -8,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ApiTranslatorTest {
@@ -59,5 +61,70 @@ class ApiTranslatorTest {
         long distinct = route.getTags().stream().distinct().count();
         assertEquals(route.getTags().size(), distinct, "route tags must be unique (no duplicates)");
         assertEquals(1, route.getTags().stream().filter("wso2-resource:_items"::equals).count());
+    }
+
+    private static ApiTranslator translator() {
+        MigrationProperties props = new MigrationProperties();
+        return new ApiTranslator(props, new ThrottlingTierResolver(null, props));
+    }
+
+    private static DiscoverySnapshot apiWithSecurity(List<String> securityScheme) {
+        return DiscoverySnapshot.builder()
+                .sourceId("apiSec").sourceName("SecAPI").sourceVersion("1.0.0")
+                .payload(Map.of(
+                        "name", "SecAPI", "version", "1.0.0", "context", "/secapi",
+                        "endpointConfig", Map.of("production_endpoints", Map.of("url", "https://b.example.com")),
+                        "securityScheme", securityScheme))
+                .build();
+    }
+
+    private static List<String> pluginNames(com.forgeshift.wso2.migration.translator.TranslatedApi api) {
+        return api.getServicePlugins() == null ? List.of()
+                : api.getServicePlugins().stream().map(KongPlugin::getName).toList();
+    }
+
+    @Test
+    void oauth2WithMandatoryFlag_emitsJwtOnly_neverStrayKeyAuth() {
+        // The bug: oauth_basic_auth_api_key_mandatory contains the substring "api_key" → a contains()
+        // check wrongly bolted key-auth onto OAuth2 APIs, breaking real OAuth2 (jwt) callers.
+        TranslatedApi api = translator().translate(
+                apiWithSecurity(List.of("oauth_basic_auth_api_key_mandatory", "oauth2")));
+        assertTrue(pluginNames(api).contains("jwt"), "oauth2 → jwt");
+        assertFalse(pluginNames(api).contains("key-auth"), "the mandatory flag must NOT add key-auth");
+    }
+
+    @Test
+    void apiKeyWithMandatoryFlag_emitsKeyAuthOnly() {
+        TranslatedApi api = translator().translate(
+                apiWithSecurity(List.of("api_key", "oauth_basic_auth_api_key_mandatory")));
+        assertTrue(pluginNames(api).contains("key-auth"), "api_key → key-auth");
+        assertFalse(pluginNames(api).contains("jwt"), "no oauth2 scheme → no jwt");
+    }
+
+    @Test
+    void bothSchemesOptional_emitsBothWithAnonymousFallback() {
+        // oauth2 + api_key + optional → either credential is accepted (OR), expressed with Kong's
+        // anonymous fallback on each auth plugin.
+        TranslatedApi api = translator().translate(
+                apiWithSecurity(List.of("oauth2", "api_key", "oauth_basic_auth_api_key_optional")));
+        var byName = api.getServicePlugins().stream()
+                .filter(pl -> pl.getName().equals("jwt") || pl.getName().equals("key-auth")).toList();
+        assertEquals(2, byName.size(), "both auth plugins present");
+        for (KongPlugin pl : byName) {
+            assertEquals(Wso2SecuritySchemes.ANONYMOUS_CONSUMER_ID, pl.getConfig().get("anonymous"),
+                    pl.getName() + " must carry the anonymous fallback for OR-auth");
+        }
+    }
+
+    @Test
+    void bothSchemesMandatory_emitsBothWithoutAnonymous_andSemantics() {
+        TranslatedApi api = translator().translate(
+                apiWithSecurity(List.of("oauth2", "api_key", "oauth_basic_auth_api_key_mandatory")));
+        for (KongPlugin pl : api.getServicePlugins()) {
+            if (pl.getName().equals("jwt") || pl.getName().equals("key-auth")) {
+                assertTrue(pl.getConfig() == null || pl.getConfig().get("anonymous") == null,
+                        pl.getName() + " must NOT carry anonymous when both are mandatory (AND)");
+            }
+        }
     }
 }

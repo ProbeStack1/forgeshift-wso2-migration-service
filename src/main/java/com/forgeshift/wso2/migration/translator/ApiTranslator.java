@@ -31,8 +31,9 @@ import java.util.*;
  *   <li>{@code transport} list → Service + Route protocols</li>
  *   <li>{@code policies} containing a tier name → rate-limiting plugin
  *       with the RPM from the configured tier map</li>
- *   <li>{@code securityScheme} contains "oauth2" → jwt plugin</li>
- *   <li>{@code securityScheme} contains "api_key" → key-auth plugin</li>
+ *   <li>{@code securityScheme} lists exactly {@code "oauth2"} → jwt plugin</li>
+ *   <li>{@code securityScheme} lists exactly {@code "api_key"} → key-auth plugin
+ *       (the WSO2 {@code oauth_basic_auth_api_key_*} flag is NOT the api_key scheme)</li>
  *   <li>{@code corsConfiguration.corsConfigurationEnabled == true} → cors plugin</li>
  *   <li>{@code responseCachingEnabled} → proxy-cache plugin</li>
  *   <li>WSO2 tags → entity tags (in addition to the wso2-source-id audit tag)</li>
@@ -231,11 +232,15 @@ public class ApiTranslator {
             }
         }
 
-        // 2) Security
+        // 2) Security — match scheme tokens EXACTLY (see Wso2SecuritySchemes: the WSO2
+        // mandatory/optional flag contains the substring "api_key" but is NOT that scheme).
         List<String> security = stringList(p.get("securityScheme"));
         if (security != null) {
-            boolean oauth = security.stream().anyMatch(s -> s != null && s.toLowerCase().contains("oauth2"));
-            boolean apiKey = security.stream().anyMatch(s -> s != null && s.toLowerCase().contains("api_key"));
+            boolean oauth = Wso2SecuritySchemes.hasOauth2(security);
+            boolean apiKey = Wso2SecuritySchemes.hasApiKey(security);
+            // BOTH schemes + "_optional" → either credential is accepted (OR). Express it with Kong's
+            // anonymous fallback so a request that satisfies one plugin isn't rejected by the other.
+            boolean orAuth = Wso2SecuritySchemes.isEitherAuthAccepted(security);
             if (oauth) {
                 // Key consumers by the client-id claim (WSO2 puts it in azp), not the default
                 // iss — every WSO2 token shares one iss, so iss-keying would collapse all
@@ -244,10 +249,14 @@ public class ApiTranslator {
                 Map<String, Object> jwtCfg = new LinkedHashMap<>();
                 jwtCfg.put("key_claim_name", props.getCredentials().getJwtKeyClaim());
                 jwtCfg.put("claims_to_verify", List.of("exp"));
+                if (orAuth) jwtCfg.put("anonymous", Wso2SecuritySchemes.ANONYMOUS_CONSUMER_ID);
                 svcPlugins.add(KongPlugin.builder().name("jwt").config(jwtCfg).enabled(true).tags(tags).build());
             }
             if (apiKey) {
-                svcPlugins.add(KongPlugin.builder().name("key-auth").enabled(true).tags(tags).build());
+                Map<String, Object> kaCfg = orAuth
+                        ? new LinkedHashMap<>(Map.of("anonymous", Wso2SecuritySchemes.ANONYMOUS_CONSUMER_ID))
+                        : null;
+                svcPlugins.add(KongPlugin.builder().name("key-auth").config(kaCfg).enabled(true).tags(tags).build());
             }
         }
 

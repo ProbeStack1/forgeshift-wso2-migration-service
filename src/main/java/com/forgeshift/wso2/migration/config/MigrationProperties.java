@@ -198,6 +198,10 @@ public class MigrationProperties {
         private String envName = "dev";
         private String pipelineTemplateRef = "ProbeStack1/pipeline-template-poc/.github/workflows/kong.yaml@main";
         private String deckMode = "apply";
+        /** decK version the pipeline installs + runs. Passed as a workflow input so it overrides the
+         *  reusable template's own default regardless of which template fork the pipeline-template-ref
+         *  points at. */
+        private String deckVersion = "1.62.1";
         private String konnectAddr = "https://us.api.konghq.com";
         private String kongConfigPathTemplate = "kong/{env}/kong.yaml";
         /** Directory the per-API files live in (decK merges every file in it). */

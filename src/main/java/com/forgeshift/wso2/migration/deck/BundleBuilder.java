@@ -160,6 +160,7 @@ public class BundleBuilder {
                 "      kong_config_path: " + configDir,
                 "      control_plane_name: " + controlPlaneName,
                 "      deck_mode: " + d.getDeckMode(),
+                "      deck_version: \"" + d.getDeckVersion() + "\"",
                 "      konnect_addr: " + konnectAddr,
                 "      validate_only: false",
                 "      result_callback_url: ${{ inputs.result_callback_url }}"));

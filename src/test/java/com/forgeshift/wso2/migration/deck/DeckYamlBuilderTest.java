@@ -11,11 +11,13 @@ import com.forgeshift.wso2.migration.translator.TranslatedApi;
 import com.forgeshift.wso2.migration.translator.TranslatedApiProduct;
 import com.forgeshift.wso2.migration.translator.TranslatedConsumer;
 import com.forgeshift.wso2.migration.translator.TranslatedMediationPolicy;
+import com.forgeshift.wso2.migration.translator.Wso2SecuritySchemes;
 import org.junit.jupiter.api.Test;
 import org.yaml.snakeyaml.Yaml;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -276,6 +278,39 @@ class DeckYamlBuilderTest {
         assertEquals("${WSO2_KM_PUBLIC_KEY_RESIDENT_KEY_MANAGER}", jwt.get("rsa_public_key"));
         Map<?, ?> ka = (Map<?, ?>) ((List<?>) c0.get("keyauth_credentials")).get(0);
         assertEquals("${WSO2_CRED_SEED05APP_PRODUCTION_KEY}", ka.get("key"));
+    }
+
+    @Test
+    void emitsSharedAnonymousConsumerWhenAuthUsesAnonymousFallback() {
+        // An OR-auth route carries config.anonymous on its auth plugins → the bundle must include the
+        // shared anonymous consumer + a request-termination that denies anyone who satisfied neither.
+        KongService svc = KongService.builder().name("dual-1-0").host("h").port(80).protocol("http").build();
+        KongPlugin keyAuth = KongPlugin.builder().name("key-auth")
+                .config(new LinkedHashMap<>(Map.of("anonymous", Wso2SecuritySchemes.ANONYMOUS_CONSUMER_ID)))
+                .enabled(true).build();
+        TranslatedApi api = TranslatedApi.builder().wso2SourceId("api-or").service(svc)
+                .servicePlugins(new ArrayList<>(List.of(keyAuth))).build();
+
+        Map<String, Object> root = parse(builder.build(List.of(api), List.of(), List.of(), List.of(), List.of()));
+
+        Map<?, ?> anon = ((List<?>) root.get("consumers")).stream().map(c -> (Map<?, ?>) c)
+                .filter(c -> Wso2SecuritySchemes.ANONYMOUS_USERNAME.equals(c.get("username")))
+                .findFirst().orElseThrow(() -> new AssertionError("anonymous consumer must be emitted"));
+        assertEquals(Wso2SecuritySchemes.ANONYMOUS_CONSUMER_ID, anon.get("id"));
+        Map<?, ?> deny = (Map<?, ?>) ((List<?>) anon.get("plugins")).get(0);
+        assertEquals("request-termination", deny.get("name"));
+        assertEquals(401, ((Map<?, ?>) deny.get("config")).get("status_code"));
+    }
+
+    @Test
+    void noAnonymousConsumerWhenAuthIsSingleScheme() {
+        KongService svc = KongService.builder().name("plain-1-0").host("h").port(80).protocol("http").build();
+        KongPlugin keyAuth = KongPlugin.builder().name("key-auth").enabled(true).build();   // no anonymous
+        TranslatedApi api = TranslatedApi.builder().wso2SourceId("api-plain").service(svc)
+                .servicePlugins(new ArrayList<>(List.of(keyAuth))).build();
+
+        Map<String, Object> root = parse(builder.build(List.of(api), List.of(), List.of(), List.of(), List.of()));
+        assertFalse(root.containsKey("consumers"), "no anonymous consumer when there is no OR-auth");
     }
 
     /** Recursively assert no map in the parsed YAML carries an {@code id} key. */
