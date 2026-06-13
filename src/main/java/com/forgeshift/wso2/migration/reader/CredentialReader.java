@@ -77,7 +77,13 @@ public class CredentialReader {
         return out;
     }
 
-    /** apiId → lowercased securityScheme values (e.g. oauth2, api_key). */
+    /**
+     * apiId → lowercased securityScheme values (e.g. oauth2, api_key). An API PRODUCT's entry is
+     * folded with the union of its member APIs' schemes — so a consumer that reaches an API only
+     * through a product gets the right credential TYPE (a product carries only the WSO2
+     * "...mandatory" flag, not api_key/oauth2, which would otherwise default the consumer to jwt
+     * even when the member API it actually calls uses api_key → key-auth).
+     */
     public Map<String, Set<String>> readSecuritySchemesByApi(String companyName, String wso2Tenant) {
         Map<String, Set<String>> out = new LinkedHashMap<>();
         String collection = props.getCredentials().getApiSecurityCollection();
@@ -91,11 +97,37 @@ public class CredentialReader {
                     schemes.add(s.toLowerCase());
                 }
             }
+            foldProductMemberSchemes(out, companyName, wso2Tenant);
         } catch (Exception e) {
             log.warn("[credentials] could not read {} for {}/{}: {} — credential type will fall back to default.",
                     collection, companyName, wso2Tenant, e.getMessage());
         }
         return out;
+    }
+
+    /**
+     * For each API Product, add the union of its member APIs' security schemes to the product's
+     * entry (keyed by the product id, which is what a product subscription points at). Read from
+     * the relationship-sync product-membership collection — best-effort.
+     */
+    private void foldProductMemberSchemes(Map<String, Set<String>> schemesByApi,
+                                          String companyName, String wso2Tenant) {
+        try {
+            List<Document> productEdges = mongoTemplate.find(tenantQuery(companyName, wso2Tenant),
+                    Document.class, props.getDependency().getRelationApiProductCollection());
+            for (Document edge : productEdges) {
+                String productId = edge.getString("apiProductId");
+                String memberApiId = edge.getString("apiId");
+                if (!StringUtils.hasText(productId) || !StringUtils.hasText(memberApiId)) continue;
+                Set<String> memberSchemes = schemesByApi.get(memberApiId);
+                if (memberSchemes != null && !memberSchemes.isEmpty()) {
+                    schemesByApi.computeIfAbsent(productId, k -> new LinkedHashSet<>()).addAll(memberSchemes);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[credentials] could not fold product member schemes for {}/{}: {}",
+                    companyName, wso2Tenant, e.getMessage());
+        }
     }
 
     private static Query tenantQuery(String companyName, String wso2Tenant) {

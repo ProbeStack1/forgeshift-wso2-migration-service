@@ -49,15 +49,18 @@ public class MigrationProperties {
         /**
          * How sensitive credential material is written into the bundle:
          * <ul>
-         *   <li>{@code ENV} (default) — decK {@code ${VAR}} reference; the value goes
-         *       in the returned manifest for the pipeline to inject at apply time.</li>
+         *   <li>{@code INLINE} (default) — raw value in the YAML. Self-contained, so
+         *       {@code deck gateway apply} validates + applies it with no external setup
+         *       and the migrated API is immediately callable. The value (e.g. a key-auth
+         *       key / consumer key) lives in the bundle's git repo — keep that repo private.</li>
+         *   <li>{@code ENV} — decK {@code ${VAR}} reference; the value goes in the returned
+         *       manifest for the pipeline to inject at apply time (decK fails validate if the
+         *       var isn't set, so the pipeline MUST provide it).</li>
          *   <li>{@code VAULT} — Kong Vault reference {@code {vault://<backend>/<ref>}}
-         *       resolved by the gateway at runtime.</li>
-         *   <li>{@code INLINE} — raw value in the YAML. DEV ONLY — never for a
-         *       git-committed bundle.</li>
+         *       resolved by the gateway at runtime (needs a vault backend in Konnect).</li>
          * </ul>
          */
-        private SecretHandling secretHandling = SecretHandling.ENV;
+        private SecretHandling secretHandling = SecretHandling.INLINE;
         /** Prefix for generated env-var names ({@code ENV} mode). */
         private String envVarPrefix = "WSO2_CRED_";
         /** Vault backend name in a {@code {vault://<backend>/...}} reference ({@code VAULT} mode). */
