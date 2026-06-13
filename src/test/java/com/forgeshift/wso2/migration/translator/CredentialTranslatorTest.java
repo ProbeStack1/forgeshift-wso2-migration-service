@@ -102,6 +102,25 @@ class CredentialTranslatorTest {
     }
 
     @Test
+    void inlineMode_inlinesCapturedKmCert_soJwtWorksToo() {
+        // When the assessment captured the KM public key, the jwt cred is self-contained even in
+        // INLINE mode (real PEM inlined), so OAuth2 APIs are callable — not skipped.
+        String pem = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkq...\n-----END PUBLIC KEY-----\n";
+        AppCredential withKm = AppCredential.builder()
+                .applicationId("app-uuid-5").applicationName("Seed05App")
+                .keyType("PRODUCTION").keyManager("Resident Key Manager")
+                .consumerKey("ck-abcdef123").keyManagerPublicKeyPem(pem)
+                .build();
+        KongConsumer c = consumer();
+        translator(SecretHandling.INLINE).attach(
+                c, "app-uuid-5", "Seed05App", List.of(withKm), Set.of("oauth2"), null);
+
+        assertThat(c.getJwt_secrets()).hasSize(1);
+        assertThat(c.getJwt_secrets().get(0)).containsEntry("rsa_public_key", pem);
+        assertThat(c.getJwt_secrets().get(0).get("rsa_public_key").toString()).doesNotContain("${");
+    }
+
+    @Test
     void inlineMode_skipsJwtButKeepsKeyAuth_soBundleStaysValid() {
         // The seed05-via-product case: the consumer reaches both api_key and oauth2 APIs, but in INLINE
         // mode the jwt cred can't carry a real KM key → skip it (warn) so the bundle still validates;

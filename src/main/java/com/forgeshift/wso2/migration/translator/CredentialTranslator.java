@@ -92,17 +92,24 @@ public class CredentialTranslator {
         }
 
         String slug = envSlug(appName, appId);
-        // A jwt credential needs the Key Manager's RSA public key, which we don't capture from WSO2.
-        // In ENV/VAULT mode we emit a reference the operator fills in. In INLINE mode there is no
-        // reference mechanism, so a jwt credential would carry a dangling ${...} that breaks
-        // `deck gateway apply` validate — skip it (and warn) so the rest of the bundle still applies.
+        // A jwt credential needs the Key Manager's RSA public key. When the assessment captured it
+        // (from /oauth2/jwks) it's inlined directly and the credential is self-contained. When it
+        // wasn't captured: ENV/VAULT emit a reference the operator fills in, but INLINE has no
+        // reference mechanism so the jwt cred is skipped (a dangling ${...} would break decK validate).
         boolean inlineMode = props.getCredentials().getSecretHandling() == SecretHandling.INLINE;
         boolean jwtSkipped = false;
+        boolean jwtNeedsCert = false;
         for (AppCredential c : creds) {
             if (!StringUtils.hasText(c.getConsumerKey())) continue;
             if (wantsJwt) {
-                if (inlineMode) jwtSkipped = true;
-                else addJwtSecret(consumer, c, slug, tags, result);
+                if (StringUtils.hasText(c.getKeyManagerPublicKeyPem())) {
+                    addJwtSecret(consumer, c, slug, tags, result, c.getKeyManagerPublicKeyPem());
+                } else if (inlineMode) {
+                    jwtSkipped = true;
+                } else {
+                    addJwtSecret(consumer, c, slug, tags, result, null);
+                    jwtNeedsCert = true;
+                }
             }
             if (wantsKeyAuth) addKeyAuth(consumer, c, appId, slug, tags, result);
         }
@@ -113,17 +120,16 @@ public class CredentialTranslator {
                         + "— configure it manually.");
             }
         }
-        if (consumer.getJwt_secrets() != null && !consumer.getJwt_secrets().isEmpty()) {
+        if (jwtNeedsCert) {
             result.getWarnings().add("Application " + display(appName, appId)
                     + ": jwt credential created keyed on the consumer key — supply the WSO2 Key Manager's "
-                    + "RSA public signing cert (from its /oauth2/jwks) for the rsa_public_key reference so "
-                    + "Kong can verify the existing WSO2 tokens.");
+                    + "RSA public signing cert for the rsa_public_key reference so Kong can verify its tokens.");
         }
         if (jwtSkipped) {
             result.getWarnings().add("Application " + display(appName, appId)
                     + ": a jwt credential (for its OAuth2 APIs) was NOT emitted because secret-handling is INLINE "
-                    + "and the Key Manager's RSA public key isn't available to inline — switch to ENV/VAULT and "
-                    + "supply the cert, or migrate the OAuth2 API separately. The key-auth credential is unaffected.");
+                    + "and the Key Manager's RSA public key wasn't captured — re-run the assessment so it fetches "
+                    + "the cert from /oauth2/jwks, or switch to ENV/VAULT. The key-auth credential is unaffected.");
         }
         dedupeManifest(result);
         return result;
@@ -138,23 +144,29 @@ public class CredentialTranslator {
         result.setManifest(new ArrayList<>(byRef.values()));
     }
 
+    /**
+     * @param inlinePem the Key Manager's RSA public key (PEM) to inline; when null, a reference
+     *                  is emitted instead and a manifest entry records the cert the operator supplies.
+     */
     private void addJwtSecret(KongConsumer consumer, AppCredential c, String slug,
-                              List<String> tags, Result result) {
+                              List<String> tags, Result result, String inlinePem) {
         // jwt_secrets.key = the client-id claim value (NOT secret — it travels in every token).
         Map<String, Object> jwt = new LinkedHashMap<>();
         jwt.put("key", c.getConsumerKey());
         jwt.put("algorithm", "RS256");
-        // The KM public key is not captured from WSO2 — emit a reference the operator supplies once
-        // per Key Manager (shared across all consumers on that KM).
-        String kmSlug = envSlug(c.getKeyManager() == null ? "default" : c.getKeyManager(), "km");
-        String kmRef = props.getCredentials().getKeyManagerPublicKeyRef().replace("{km}", kmSlug);
-        jwt.put("rsa_public_key", renderRef(kmRef));
+        if (StringUtils.hasText(inlinePem)) {
+            jwt.put("rsa_public_key", inlinePem);   // captured from /oauth2/jwks — self-contained
+        } else {
+            // Not captured — emit a reference the operator supplies once per Key Manager.
+            String kmSlug = envSlug(c.getKeyManager() == null ? "default" : c.getKeyManager(), "km");
+            String kmRef = props.getCredentials().getKeyManagerPublicKeyRef().replace("{km}", kmSlug);
+            jwt.put("rsa_public_key", renderRef(kmRef));
+            result.getManifest().add(SecretRef.builder()
+                    .reference(kmRef).value(null)
+                    .applicationId(c.getApplicationId()).field("km-public-key:" + kmSlug).build());
+        }
         if (tags != null) jwt.put("tags", tags);
         addTo(consumer, "jwt", jwt);
-
-        result.getManifest().add(SecretRef.builder()
-                .reference(kmRef).value(null)   // operator supplies the KM cert
-                .applicationId(c.getApplicationId()).field("km-public-key:" + kmSlug).build());
     }
 
     private void addKeyAuth(KongConsumer consumer, AppCredential c, String appId, String slug,

@@ -46,6 +46,8 @@ public class CredentialReader {
         private String consumerKey;
         private String consumerSecret;
         private List<String> supportedGrantTypes;
+        /** Key Manager RSA public signing cert (PEM), for jwt_secrets.rsa_public_key. May be null. */
+        private String keyManagerPublicKeyPem;
     }
 
     /** applicationId → its captured OAuth2 credentials (may be empty). */
@@ -66,6 +68,7 @@ public class CredentialReader {
                         .consumerKey(d.getString("consumerKey"))
                         .consumerSecret(d.getString("consumerSecret"))
                         .supportedGrantTypes(stringList(d.get("supportedGrantTypes")))
+                        .keyManagerPublicKeyPem(d.getString("keyManagerPublicKeyPem"))
                         .build());
             }
             log.info("[credentials] loaded keys for {} application(s) from {} for {}/{}",
