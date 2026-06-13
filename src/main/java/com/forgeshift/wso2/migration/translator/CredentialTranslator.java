@@ -92,9 +92,18 @@ public class CredentialTranslator {
         }
 
         String slug = envSlug(appName, appId);
+        // A jwt credential needs the Key Manager's RSA public key, which we don't capture from WSO2.
+        // In ENV/VAULT mode we emit a reference the operator fills in. In INLINE mode there is no
+        // reference mechanism, so a jwt credential would carry a dangling ${...} that breaks
+        // `deck gateway apply` validate — skip it (and warn) so the rest of the bundle still applies.
+        boolean inlineMode = props.getCredentials().getSecretHandling() == SecretHandling.INLINE;
+        boolean jwtSkipped = false;
         for (AppCredential c : creds) {
             if (!StringUtils.hasText(c.getConsumerKey())) continue;
-            if (wantsJwt) addJwtSecret(consumer, c, slug, tags, result);
+            if (wantsJwt) {
+                if (inlineMode) jwtSkipped = true;
+                else addJwtSecret(consumer, c, slug, tags, result);
+            }
             if (wantsKeyAuth) addKeyAuth(consumer, c, appId, slug, tags, result);
         }
         for (String scheme : schemes) {
@@ -109,6 +118,12 @@ public class CredentialTranslator {
                     + ": jwt credential created keyed on the consumer key — supply the WSO2 Key Manager's "
                     + "RSA public signing cert (from its /oauth2/jwks) for the rsa_public_key reference so "
                     + "Kong can verify the existing WSO2 tokens.");
+        }
+        if (jwtSkipped) {
+            result.getWarnings().add("Application " + display(appName, appId)
+                    + ": a jwt credential (for its OAuth2 APIs) was NOT emitted because secret-handling is INLINE "
+                    + "and the Key Manager's RSA public key isn't available to inline — switch to ENV/VAULT and "
+                    + "supply the cert, or migrate the OAuth2 API separately. The key-auth credential is unaffected.");
         }
         dedupeManifest(result);
         return result;

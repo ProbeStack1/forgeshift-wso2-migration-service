@@ -102,6 +102,21 @@ class CredentialTranslatorTest {
     }
 
     @Test
+    void inlineMode_skipsJwtButKeepsKeyAuth_soBundleStaysValid() {
+        // The seed05-via-product case: the consumer reaches both api_key and oauth2 APIs, but in INLINE
+        // mode the jwt cred can't carry a real KM key → skip it (warn) so the bundle still validates;
+        // the key-auth cred (which makes seed05 callable) is emitted with the inline key value.
+        KongConsumer c = consumer();
+        CredentialTranslator.Result r = translator(SecretHandling.INLINE).attach(
+                c, "app-uuid-5", "Seed05App", List.of(cred()), Set.of("oauth2", "api_key"), null);
+
+        assertThat(c.getJwt_secrets()).isNull();
+        assertThat(c.getKeyauth_credentials()).hasSize(1);
+        assertThat(c.getKeyauth_credentials().get(0)).containsEntry("key", "ck-abcdef123");
+        assertThat(r.getWarnings()).anyMatch(w -> w.contains("jwt credential") && w.contains("NOT emitted"));
+    }
+
+    @Test
     void noCapturedCredentials_warnsAndEmitsNothing() {
         KongConsumer c = consumer();
         CredentialTranslator.Result r = translator(SecretHandling.ENV).attach(
