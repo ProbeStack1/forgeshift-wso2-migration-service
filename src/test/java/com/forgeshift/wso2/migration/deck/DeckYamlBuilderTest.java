@@ -68,9 +68,14 @@ class DeckYamlBuilderTest {
     }
 
     @Test
-    void productRouteAndMediationPluginLinkByServiceName() {
+    void productRoutesAndMediationPluginsNestUnderTheirMemberService() {
+        // Product-context routes and mediation plugins must be NESTED under the member service (not
+        // emitted as top-level entities referencing it by {name:X}). A cross-file top-level route makes
+        // decK apply insert the service twice ("entity already exists") even though it validates/renders.
         KongService svc = KongService.builder().name("orders-1-0").host("h").port(80).protocol("http").build();
-        TranslatedApi api = TranslatedApi.builder().wso2SourceId("api1").service(svc).build();
+        KongRoute ownRoute = KongRoute.builder().name("orders-own").paths(List.of("/o")).build();
+        TranslatedApi api = TranslatedApi.builder().wso2SourceId("api1").service(svc)
+                .routes(new ArrayList<>(List.of(ownRoute))).build();
 
         KongRoute prodRoute = KongRoute.builder().name("prod-route").paths(List.of("/p")).build();
         TranslatedApiProduct product = TranslatedApiProduct.builder()
@@ -87,10 +92,21 @@ class DeckYamlBuilderTest {
         Map<String, Object> root = parse(
                 builder.build(List.of(api), List.of(), List.of(), List.of(product), List.of(med)));
 
-        Map<?, ?> r0 = (Map<?, ?>) ((List<?>) root.get("routes")).get(0);
-        assertEquals(Map.of("name", "orders-1-0"), r0.get("service"));
-        Map<?, ?> p0 = (Map<?, ?>) ((List<?>) root.get("plugins")).get(0);
-        assertEquals(Map.of("name", "orders-1-0"), p0.get("service"));
+        // No top-level routes/plugins — everything is nested under the one service.
+        assertFalse(root.containsKey("routes"), "product routes must be nested, not top-level");
+        assertFalse(root.containsKey("plugins"), "mediation plugins must be nested, not top-level");
+
+        Map<?, ?> s0 = (Map<?, ?>) ((List<?>) root.get("services")).get(0);
+        List<?> routes = (List<?>) s0.get("routes");
+        assertEquals(2, routes.size(), "service owns its own route + the product-context route");
+        for (Object ro : routes) {
+            assertFalse(((Map<?, ?>) ro).containsKey("service"), "nested route carries no service FK");
+        }
+        assertTrue(routes.stream().anyMatch(ro -> "prod-route".equals(((Map<?, ?>) ro).get("name"))),
+                "product route nested under the member service");
+        Map<?, ?> p0 = (Map<?, ?>) ((List<?>) s0.get("plugins")).get(0);
+        assertEquals("post-function", p0.get("name"), "mediation plugin nested under the service");
+        assertFalse(p0.containsKey("service"), "nested plugin carries no service FK");
     }
 
     @Test

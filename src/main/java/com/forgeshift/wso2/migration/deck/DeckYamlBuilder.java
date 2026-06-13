@@ -83,13 +83,18 @@ public class DeckYamlBuilder {
 
         Map<String, String> svcNames = serviceNames(apis);
         Map<String, Object> root = newRoot();
+        // Product-context routes and mediation plugins are folded into their member/target service
+        // (nested), so the service stays a single self-contained definition — see serviceNode().
+        Map<String, List<Object>> prodByMember = productRoutesByMember(products, svcNames);
+        Map<String, List<Object>> medByApi = mediationPluginsByApi(mediations, svcNames);
 
         List<Object> services = new ArrayList<>();
         List<Object> upstreams = new ArrayList<>();
         if (apis != null) {
             for (TranslatedApi a : apis) {
                 if (a.getService() == null) continue;
-                Map<String, Object> svc = serviceNode(a);
+                Map<String, Object> svc = serviceNode(a, prodByMember.get(a.getWso2SourceId()),
+                        medByApi.get(a.getWso2SourceId()));
                 injectKongId(svc, kongIds, a.getWso2SourceId(), "SERVICE");
                 services.add(svc);
                 Map<String, Object> up = upstreamNode(a);
@@ -102,15 +107,11 @@ public class DeckYamlBuilder {
 
         List<Object> consumerList = consumerNodes(consumers, kongIds);
         List<Object> certList = certNodes(certificates, kongIds);
-        List<Object> topRoutes = productRouteNodes(products, svcNames);
-        List<Object> topPlugins = mediationPluginNodes(mediations, svcNames);
 
         if (!services.isEmpty()) root.put("services", services);
         if (!consumerList.isEmpty()) root.put("consumers", consumerList);
         if (!upstreams.isEmpty()) root.put("upstreams", upstreams);
         if (!certList.isEmpty()) root.put("ca_certificates", certList);
-        if (!topRoutes.isEmpty()) root.put("routes", topRoutes);
-        if (!topPlugins.isEmpty()) root.put("plugins", topPlugins);
 
         return dump(root);
     }
@@ -152,20 +153,19 @@ public class DeckYamlBuilder {
         Map<String, String> files = new LinkedHashMap<>();
         Map<String, String> svcNames = serviceNames(apis);
 
-        // mediation plugins grouped by the API service they attach to
-        Map<String, List<TranslatedMediationPolicy>> medByApi = new LinkedHashMap<>();
-        if (mediations != null) {
-            for (TranslatedMediationPolicy m : mediations) {
-                if (!m.isDeployable()) continue;
-                medByApi.computeIfAbsent(m.getTargetApiId(), k -> new ArrayList<>()).add(m);
-            }
-        }
+        // Product-context routes and mediation plugins fold (nested) into their member/target service's
+        // own file, so each API file holds ONE self-contained service. A separate api-products.yaml with
+        // top-level routes referencing the service by {name:X} makes decK apply insert the service twice
+        // ("entity already exists") even though it validates/renders fine — see serviceNode().
+        Map<String, List<Object>> prodByMember = productRoutesByMember(products, svcNames);
+        Map<String, List<Object>> medByApi = mediationPluginsByApi(mediations, svcNames);
 
         if (apis != null) {
             for (TranslatedApi a : apis) {
                 if (a.getService() == null) continue;
                 Map<String, Object> root = newRoot();
-                Map<String, Object> svc = serviceNode(a);
+                Map<String, Object> svc = serviceNode(a, prodByMember.get(a.getWso2SourceId()),
+                        medByApi.get(a.getWso2SourceId()));
                 injectKongId(svc, kongIds, a.getWso2SourceId(), "SERVICE");
                 root.put("services", List.of(svc));
                 Map<String, Object> up = upstreamNode(a);
@@ -173,8 +173,6 @@ public class DeckYamlBuilder {
                     injectKongId(up, kongIds, a.getWso2SourceId(), "UPSTREAM");
                     root.put("upstreams", List.of(up));
                 }
-                List<Object> medPlugins = mediationPluginNodes(medByApi.get(a.getWso2SourceId()), svcNames);
-                if (!medPlugins.isEmpty()) root.put("plugins", medPlugins);
                 files.put(dir + "/api-" + fileSlug(a.getService().getName(), a.getWso2SourceId()) + ".yaml",
                         dump(root));
             }
@@ -194,19 +192,20 @@ public class DeckYamlBuilder {
             files.put(dir + "/ca-certificates.yaml", dump(root));
         }
 
-        List<Object> productRoutes = productRouteNodes(products, svcNames);
-        if (!productRoutes.isEmpty()) {
-            Map<String, Object> root = newRoot();
-            root.put("routes", productRoutes);
-            files.put(dir + "/api-products.yaml", dump(root));
-        }
-
         return files;
     }
 
     // ---------------- node builders ----------------
 
-    private Map<String, Object> serviceNode(TranslatedApi a) {
+    /**
+     * @param extraRoutes  product-context routes whose member API is this service — nested here so the
+     *                     service owns ALL its routes. A top-level route in a SEPARATE file referencing
+     *                     the service by {@code {name: X}} makes decK's apply state-builder insert the
+     *                     service a second time ("entity already exists"), even though it validates and
+     *                     renders fine. Nesting keeps one self-contained service definition.
+     * @param extraPlugins mediation plugins targeting this service — nested for the same reason.
+     */
+    private Map<String, Object> serviceNode(TranslatedApi a, List<Object> extraRoutes, List<Object> extraPlugins) {
         Map<String, Object> svc = toMap(a.getService());
         String svcName = a.getService().getName();
         putId(svc, "service:" + svcName);
@@ -222,8 +221,10 @@ public class DeckYamlBuilder {
                 routeList.add(routeMap);
             }
         }
+        if (extraRoutes != null) routeList.addAll(extraRoutes);
         if (!routeList.isEmpty()) svc.put("routes", routeList);
-        List<Object> spMaps = pluginMaps(a.getServicePlugins(), "service:" + svcName);
+        List<Object> spMaps = new ArrayList<>(pluginMaps(a.getServicePlugins(), "service:" + svcName));
+        if (extraPlugins != null) spMaps.addAll(extraPlugins);
         if (!spMaps.isEmpty()) svc.put("plugins", spMaps);
         return svc;
     }
@@ -304,46 +305,55 @@ public class DeckYamlBuilder {
         return out;
     }
 
-    private List<Object> productRouteNodes(List<TranslatedApiProduct> products, Map<String, String> svcNames) {
-        List<Object> out = new ArrayList<>();
+    /**
+     * Product-context routes grouped by their member API's wso2SourceId, in NESTED form (no {@code service}
+     * FK) so each can be folded into its member service's {@code routes:} list. See {@link #serviceNode}
+     * for why nesting (vs a top-level route with {@code service: {name: X}}) matters for decK apply.
+     */
+    private Map<String, List<Object>> productRoutesByMember(List<TranslatedApiProduct> products,
+                                                            Map<String, String> svcNames) {
+        Map<String, List<Object>> out = new LinkedHashMap<>();
         if (products == null) return out;
         for (TranslatedApiProduct p : products) {
             if (p.getRoutes() == null) continue;
             for (TranslatedApiProduct.ProductRoute pr : p.getRoutes()) {
-                String svcName = svcNames.get(pr.getMemberApiId());
-                if (svcName == null || pr.getRoute() == null) {
-                    log.warn("Product '{}' route skipped — member API {} has no translated service",
+                if (pr.getRoute() == null || !svcNames.containsKey(pr.getMemberApiId())) {
+                    log.warn("Product '{}' route skipped — member API {} has no translated service in this bundle",
                             p.getWso2SourceName(), pr.getMemberApiId());
                     continue;
                 }
                 Map<String, Object> routeMap = toMap(pr.getRoute());
-                routeMap.put("service", Map.of("name", svcName));
+                routeMap.remove("service");   // nested under the member service → no cross-file FK
                 putId(routeMap, "route:product:" + pr.getRoute().getName());
                 List<Object> rpMaps = pluginMaps(pr.getPlugins(), "route:product:" + pr.getRoute().getName());
                 if (!rpMaps.isEmpty()) routeMap.put("plugins", rpMaps);
-                out.add(routeMap);
+                out.computeIfAbsent(pr.getMemberApiId(), k -> new ArrayList<>()).add(routeMap);
             }
         }
         return out;
     }
 
-    private List<Object> mediationPluginNodes(List<TranslatedMediationPolicy> mediations, Map<String, String> svcNames) {
-        List<Object> out = new ArrayList<>();
+    /**
+     * Mediation plugins grouped by their target API's wso2SourceId, in NESTED form (no {@code service}
+     * FK) so each folds into its service's {@code plugins:} list (same apply-safety reason as routes).
+     */
+    private Map<String, List<Object>> mediationPluginsByApi(List<TranslatedMediationPolicy> mediations,
+                                                            Map<String, String> svcNames) {
+        Map<String, List<Object>> out = new LinkedHashMap<>();
         if (mediations == null) return out;
         for (TranslatedMediationPolicy m : mediations) {
             if (!m.isDeployable()) continue;
-            String svcName = svcNames.get(m.getTargetApiId());
-            if (svcName == null) {
-                log.warn("Mediation '{}' skipped — target API {} has no translated service",
+            if (!svcNames.containsKey(m.getTargetApiId())) {
+                log.warn("Mediation '{}' skipped — target API {} has no translated service in this bundle",
                         m.getWso2SourceName(), m.getTargetApiId());
                 continue;
             }
             Map<String, Object> pm = toMap(m.getPlugin());
             pm.remove("route");
             pm.remove("consumer");
-            pm.put("service", Map.of("name", svcName));
-            putId(pm, "plugin:service:" + svcName + ":mediation:" + m.getWso2SourceId());
-            out.add(pm);
+            pm.remove("service");   // nested under the service → no FK
+            putId(pm, "plugin:service:" + svcNames.get(m.getTargetApiId()) + ":mediation:" + m.getWso2SourceId());
+            out.computeIfAbsent(m.getTargetApiId(), k -> new ArrayList<>()).add(pm);
         }
         return out;
     }
