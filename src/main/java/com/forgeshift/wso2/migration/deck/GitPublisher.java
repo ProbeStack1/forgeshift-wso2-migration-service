@@ -6,6 +6,7 @@ import com.forgeshift.wso2.migration.reader.GitProfileReader;
 import com.forgeshift.wso2.migration.reader.KongKonnectCredentials;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpMethod;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -15,8 +16,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -188,6 +192,19 @@ public class GitPublisher {
                 }
             }
 
+            // Remove files left in THIS API's directory by a previous bundle but no longer generated
+            // (e.g. api-products.yaml once product routes became nested). The pipeline applies the whole
+            // per-API directory, so a stale file would re-introduce entities the current bundle dropped
+            // and collide ("entity already exists"). Only per-API subdirs are reconciled — never the
+            // shared kong/<env> root — so other APIs' files are untouched.
+            if (props.getDeck().isPerApiDir()) {
+                int removed = reconcilePerApiDirs(gh, owner, repoName, branch, files.keySet(),
+                        createOnlyPaths, message, cfg);
+                if (removed > 0) {
+                    log.info("Removed {} stale bundle file(s) so the pipeline applies only the current bundle.", removed);
+                }
+            }
+
             // Trigger the pipeline EXPLICITLY (workflow_dispatch) so it picks up THIS migration's
             // result_callback_url — instead of relying on a push trigger baked into a shared,
             // possibly-stale workflow file. A dispatch failure is recorded but does not discard the
@@ -353,6 +370,80 @@ public class GitPublisher {
         } catch (WebClientResponseException.NotFound nf) {
             return null;   // new file
         }
+    }
+
+    /**
+     * Deletes files that live in the per-API directories this bundle writes into but are NOT part of
+     * the current bundle (and aren't create-only). Returns the count removed. Only directories of the
+     * form {@code kong/<env>/<api-slug>/} (≥ 2 path separators under {@code kong/}) are reconciled, so
+     * the shared {@code kong/<env>} root and other APIs' files are never deleted.
+     */
+    private int reconcilePerApiDirs(WebClient gh, String owner, String repo, String branch,
+                                    Set<String> keep, Set<String> createOnlyPaths, String message,
+                                    MigrationProperties.Deck.Git cfg) {
+        Set<String> dirs = perApiDirs(keep);
+        int removed = 0;
+        for (String dir : dirs) {
+            for (Map<String, Object> item : listDir(gh, owner, repo, dir, branch)) {
+                if (!"file".equals(str(item.get("type")))) continue;
+                String p = str(item.get("path"));
+                if (p == null || keep.contains(p)) continue;                       // current bundle file
+                if (createOnlyPaths != null && createOnlyPaths.contains(p)) continue;
+                try {
+                    deleteFile(gh, owner, repo, p, branch, str(item.get("sha")), message, cfg);
+                    removed++;
+                    log.info("Deleted stale bundle file {} (no longer generated)", p);
+                } catch (Exception ex) {
+                    log.warn("Could not delete stale bundle file {}: {}", p, ex.getMessage());
+                }
+            }
+        }
+        return removed;
+    }
+
+    /** Per-API kong directories ({@code kong/<env>/<slug>}) among the bundle paths — never {@code kong/<env>}. */
+    static Set<String> perApiDirs(Set<String> bundlePaths) {
+        Set<String> dirs = new LinkedHashSet<>();
+        for (String path : bundlePaths) {
+            int slash = path == null ? -1 : path.lastIndexOf('/');
+            if (slash <= 0) continue;
+            String dir = path.substring(0, slash);
+            if (dir.startsWith("kong/") && dir.chars().filter(c -> c == '/').count() >= 2) {
+                dirs.add(dir);
+            }
+        }
+        return dirs;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> listDir(WebClient gh, String owner, String repo, String dir, String branch) {
+        try {
+            List<Map<String, Object>> resp = gh.get()
+                    .uri("/repos/" + owner + "/" + repo + "/contents/" + dir + "?ref=" + branch)
+                    .retrieve()
+                    .bodyToMono(List.class)
+                    .block();
+            return resp == null ? new ArrayList<>() : resp;
+        } catch (WebClientResponseException.NotFound nf) {
+            return new ArrayList<>();   // directory doesn't exist yet (first migration)
+        }
+    }
+
+    private void deleteFile(WebClient gh, String owner, String repo, String path, String branch,
+                            String sha, String message, MigrationProperties.Deck.Git cfg) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("message", "chore(deck): remove stale " + path + " — " + message);
+        body.put("sha", sha);
+        body.put("branch", branch);
+        if (StringUtils.hasText(cfg.getAuthorName()) && StringUtils.hasText(cfg.getAuthorEmail())) {
+            body.put("committer", Map.of("name", cfg.getAuthorName(), "email", cfg.getAuthorEmail()));
+        }
+        gh.method(HttpMethod.DELETE)
+                .uri("/repos/" + owner + "/" + repo + "/contents/" + path)
+                .bodyValue(body)
+                .retrieve()
+                .bodyToMono(Void.class)
+                .block();
     }
 
     /** Existing file sha + decoded text content (null when the file doesn't exist). */
