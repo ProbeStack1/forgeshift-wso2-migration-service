@@ -124,20 +124,23 @@ public final class OperationPolicyTranslator {
                     if (has(from) && has(to)) addToList(cfg, "rename", "headers", from + ":" + to); else unsupported.add(name);
                 }
                 case "addqueryparam" -> {
-                    String q = param(params, "queryParamName", "paramName", "name");
-                    String v = param(params, "queryParamValue", "value");
+                    // WSO2's built-in addQueryParam uses paramKey/paramValue; older guesses kept as fallback.
+                    String q = param(params, "paramKey", "queryParamName", "paramName", "name");
+                    String v = param(params, "paramValue", "queryParamValue", "value");
                     if (requestFlow && has(q)) addToList(cfg, "add", "querystring", q + ":" + nz(v)); else unsupported.add(name);
                 }
                 case "removequeryparam" -> {
-                    String q = param(params, "queryParamName", "paramName", "name");
+                    String q = param(params, "paramKey", "queryParamName", "paramName", "name");
                     if (requestFlow && has(q)) addToList(cfg, "remove", "querystring", q); else unsupported.add(name);
                 }
                 case "rewriteresourcepath" -> {
-                    String path = param(params, "resourcePath", "newResourcePath", "uriTemplate", "value");
+                    // WSO2's built-in rewriteResourcePath (v3) uses newResourcePath.
+                    String path = param(params, "newResourcePath", "resourcePath", "uriTemplate", "value");
                     if (requestFlow && has(path)) setScalar(cfg, "replace", "uri", path); else unsupported.add(name);
                 }
-                case "rewritehttpmethod" -> {
-                    String method = param(params, "updatedHttpMethod", "updatedMethod", "httpMethod", "value");
+                case "changehttpmethod", "rewritehttpmethod" -> {
+                    // WSO2's built-in policy is changeHTTPMethod (httpMethod param); accept the older alias too.
+                    String method = param(params, "httpMethod", "updatedHttpMethod", "updatedMethod", "value");
                     if (requestFlow && has(method)) cfg.put("http_method", method.trim().toUpperCase()); else unsupported.add(name);
                 }
                 default -> unsupported.add(has(name) ? name : "unnamed-policy");

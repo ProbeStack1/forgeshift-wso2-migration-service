@@ -29,12 +29,14 @@ class OperationPolicyTranslatorTest {
 
     @Test
     void requestFlow_mapsHeaderQueryPathMethodBuiltins() {
+        // Uses the REAL WSO2 built-in policy names + param keys (addQueryParam→paramKey/paramValue,
+        // rewriteResourcePath→newResourcePath, changeHTTPMethod→httpMethod).
         Map<String, Object> api = Map.of("apiPolicies", Map.of("request", List.of(
                 policy("addHeader", "headerName", "X-Tenant", "headerValue", "acme"),
                 policy("removeHeader", "headerName", "X-Internal"),
-                policy("addQueryParam", "queryParamName", "debug", "queryParamValue", "true"),
-                policy("rewriteResourcePath", "resourcePath", "/v2/items"),
-                policy("rewriteHTTPMethod", "updatedHttpMethod", "post"))));
+                policy("addQueryParam", "paramKey", "debug", "paramValue", "true"),
+                policy("rewriteResourcePath", "newResourcePath", "/v2/items"),
+                policy("changeHTTPMethod", "httpMethod", "post"))));
 
         OperationPolicyTranslator.Result r = OperationPolicyTranslator.translate(api, "API", List.of("t"));
         KongPlugin rt = named(r, "request-transformer");
