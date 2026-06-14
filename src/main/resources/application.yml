@@ -4,12 +4,13 @@ spring:
   config:
     import:
       - optional:file:.env[.properties]
+      - optional:file:config/application-${SPRING_PROFILES_ACTIVE:local}.yml
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:local}
   data:
     mongodb:
-      uri: ${MONGODB_URI:mongodb+srv://java-app:LszhHwotDeKBfG3a@probestack-nonprod.hdggqx.mongodb.net/probestack-wso2-forgeshift?appName=Probestack-nonprod}
-      database: ${MONGODB_DATABASE:probestack-wso2-forgeshift}
+      uri: ${MONGODB_URI:mongodb://localhost:27017/forgeshift_migration}
+      database: ${MONGODB_DATABASE:forgeshift_migration}
       auto-index-creation: true
   jackson:
     default-property-inclusion: non_null
@@ -99,8 +100,8 @@ forgeshift:
     # Konnect API tuning
     konnect:
       base-url-fallback: ${KONNECT_BASE_URL:https://us.api.konghq.com}
-      access-token-fallback: ${KONNECT_ACCESS_TOKEN:kpat_2d2rITsYZEege6CyD989DcS6nLTGDiRe3U2VSZZBfEzAQ7VvR}
-      control-plane-id-fallback: ${KONNECT_CONTROL_PLANE_ID:43dbc26e-23c1-4443-982a-96321e6d0dfb}
+      access-token-fallback: ${KONNECT_ACCESS_TOKEN:}
+      control-plane-id-fallback: ${KONNECT_CONTROL_PLANE_ID:}
       request-timeout-seconds: 30
       trust-self-signed: ${KONNECT_TRUST_SELF_SIGNED:false}
       # Path templates under {base-url}/v2/control-planes/{cp-id}/core-entities/...

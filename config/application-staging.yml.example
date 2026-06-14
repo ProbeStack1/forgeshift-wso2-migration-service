@@ -1,0 +1,5 @@
+anthropic:
+  # Copy this file to config/application-staging.yml on the staging server
+  # and put the real Claude/Anthropic key there. Do not commit the copied file.
+  api-key: ""
+
