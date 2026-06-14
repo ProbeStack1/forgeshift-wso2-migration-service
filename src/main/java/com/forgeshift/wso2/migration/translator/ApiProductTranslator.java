@@ -59,6 +59,12 @@ public class ApiProductTranslator {
         // Product-level plugins — ONLY the policies/security this product actually has.
         List<KongPlugin> productPlugins = buildProductPlugins(p, baseTags,
                 tierResolver.effectiveTierRpm(snap.getCompanyName(), snap.getWso2Tenant()));
+        // AM 4.x operation policies declared on the product → request/response-transformer (applied to
+        // every product route). Operations live under member APIs, so only product-level apiPolicies map here.
+        OperationPolicyTranslator.Result productOpPolicies =
+                OperationPolicyTranslator.translate(p, productName, baseTags);
+        productPlugins.addAll(productOpPolicies.getPlugins());
+        warnings.addAll(productOpPolicies.getWarnings());
 
         List<TranslatedApiProduct.ProductRoute> routes = new ArrayList<>();
 

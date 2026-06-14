@@ -36,6 +36,9 @@ import java.util.*;
  *       (the WSO2 {@code oauth_basic_auth_api_key_*} flag is NOT the api_key scheme)</li>
  *   <li>{@code corsConfiguration.corsConfigurationEnabled == true} → cors plugin</li>
  *   <li>{@code responseCachingEnabled} → proxy-cache plugin</li>
+ *   <li>{@code apiPolicies} / {@code operations[].operationPolicies} (AM 4.x operation policies:
+ *       add/set/remove/rename header, add/remove query param, rewrite path/method) →
+ *       request-transformer / response-transformer (see {@link OperationPolicyTranslator})</li>
  *   <li>WSO2 tags → entity tags (in addition to the wso2-source-id audit tag)</li>
  * </ul>
  */
@@ -282,6 +285,12 @@ public class ApiTranslator {
             cfg.put("strategy", "memory");
             svcPlugins.add(KongPlugin.builder().name("proxy-cache").config(cfg).enabled(true).tags(tags).build());
         }
+
+        // 4b) AM 4.x operation policies (apiPolicies + operations[].operationPolicies) → request/
+        // response-transformer for the header/query/path/method built-ins; the rest become warnings.
+        OperationPolicyTranslator.Result opPolicies = OperationPolicyTranslator.translate(p, apiName, tags);
+        svcPlugins.addAll(opPolicies.getPlugins());
+        warnings.addAll(opPolicies.getWarnings());
 
         // 5) Custom mediation: out of scope for MVP - emit a warning
         if (p.containsKey("mediationPolicies")
