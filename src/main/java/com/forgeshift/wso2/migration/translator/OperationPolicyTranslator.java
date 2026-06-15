@@ -59,14 +59,20 @@ public final class OperationPolicyTranslator {
         if (request.isEmpty() && response.isEmpty() && !fault) return result;
 
         List<String> unsupported = new ArrayList<>();
+        List<String> customMapped = new ArrayList<>();
         Map<String, Object> reqCfg = new LinkedHashMap<>();
-        unsupported.addAll(applyTo(request, reqCfg, true));
+        applyTo(request, reqCfg, true, unsupported, customMapped);
         if (!reqCfg.isEmpty()) result.getPlugins().add(plugin("request-transformer", reqCfg, tags));
 
         Map<String, Object> respCfg = new LinkedHashMap<>();
-        unsupported.addAll(applyTo(response, respCfg, false));
+        applyTo(response, respCfg, false, unsupported, customMapped);
         if (!respCfg.isEmpty()) result.getPlugins().add(plugin("response-transformer", respCfg, tags));
 
+        if (!customMapped.isEmpty()) {
+            result.getWarnings().add("API " + apiName + ": custom operation policies mapped to a header "
+                    + "transform from their parameters (verify the intended behaviour): "
+                    + String.join(", ", new LinkedHashSet<>(customMapped)) + ".");
+        }
         if (!unsupported.isEmpty()) {
             result.getWarnings().add("API " + apiName + ": operation policies not auto-translated (manual review): "
                     + String.join(", ", new LinkedHashSet<>(unsupported)) + ".");
@@ -97,10 +103,14 @@ public final class OperationPolicyTranslator {
         }
     }
 
-    /** Maps each policy into the transformer config; returns the policy names it could not map. */
+    /**
+     * Maps each policy into the transformer config. Built-ins map by name; unrecognized policy names
+     * that carry header parameters are treated as custom header-set policies (recorded in
+     * {@code customMapped}); everything else is recorded in {@code unsupported} for a manual-review warning.
+     */
     @SuppressWarnings("unchecked")
-    private static List<String> applyTo(List<Map<String, Object>> policies, Map<String, Object> cfg, boolean requestFlow) {
-        List<String> unsupported = new ArrayList<>();
+    private static void applyTo(List<Map<String, Object>> policies, Map<String, Object> cfg, boolean requestFlow,
+                                List<String> unsupported, List<String> customMapped) {
         for (Map<String, Object> pol : policies) {
             String name = str(pol.get("policyName"));
             Map<String, Object> params = pol.get("parameters") instanceof Map<?, ?> pm
@@ -143,10 +153,25 @@ public final class OperationPolicyTranslator {
                     String method = param(params, "httpMethod", "updatedHttpMethod", "updatedMethod", "value");
                     if (requestFlow && has(method)) cfg.put("http_method", method.trim().toUpperCase()); else unsupported.add(name);
                 }
-                default -> unsupported.add(has(name) ? name : "unnamed-policy");
+                default -> {
+                    // Custom (non-built-in) operation policy. The overwhelmingly common enterprise/bank
+                    // custom policy is a header setter — a WSO2 Synapse
+                    // <property scope="transport" action="set" name=.. value=..> declared with
+                    // headerName/headerValue parameters. Map that shape to a header transform so the policy's
+                    // VALUES survive the migration instead of being dropped; anything without header params
+                    // stays a manual-review warning (complex Synapse logic still needs the AI/Lua path).
+                    String hName = param(params, "headerName", "headerKey", "name");
+                    String hValue = param(params, "headerValue", "value");
+                    if (has(hName) && has(hValue)) {
+                        addToList(cfg, "add", "headers", hName + ":" + hValue);
+                        addToList(cfg, "replace", "headers", hName + ":" + hValue); // WSO2 "set" = overwrite-or-add
+                        customMapped.add(has(name) ? name : "custom-policy");
+                    } else {
+                        unsupported.add(has(name) ? name : "unnamed-policy");
+                    }
+                }
             }
         }
-        return unsupported;
     }
 
     @SuppressWarnings("unchecked")

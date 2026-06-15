@@ -73,6 +73,25 @@ class OperationPolicyTranslatorTest {
     }
 
     @Test
+    void customHeaderPolicy_mapsToTransformer_preservingValue() {
+        // A custom (non-built-in) policy that carries headerName/headerValue is a Synapse header-set policy
+        // (e.g. the bank's addBankCorrelationId / setBankAuditHeader). It maps to a header transform so the
+        // policy's VALUE is preserved instead of dropped; "set" semantics => both add and replace.
+        Map<String, Object> api = Map.of("apiPolicies", Map.of(
+                "request", List.of(policy("addBankCorrelationId", "headerName", "X-Correlation-Id", "headerValue", "generated")),
+                "response", List.of(policy("setBankAuditHeader", "headerName", "X-Audit", "headerValue", "served"))));
+
+        OperationPolicyTranslator.Result r = OperationPolicyTranslator.translate(api, "API", List.of("t"));
+
+        KongPlugin rt = named(r, "request-transformer");
+        assertThat(section(rt, "add", "headers")).containsExactly("X-Correlation-Id:generated");
+        assertThat(section(rt, "replace", "headers")).containsExactly("X-Correlation-Id:generated");
+        KongPlugin resp = named(r, "response-transformer");
+        assertThat(section(resp, "add", "headers")).containsExactly("X-Audit:served");
+        assertThat(r.getWarnings()).anyMatch(w -> w.contains("addBankCorrelationId") && w.contains("header transform"));
+    }
+
+    @Test
     void perOperationPolicies_appliedApiWide_withWarning() {
         Map<String, Object> api = Map.of("operations", List.of(Map.of(
                 "verb", "GET", "target", "/x",
