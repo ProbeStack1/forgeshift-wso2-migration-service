@@ -127,4 +127,49 @@ class ApiTranslatorTest {
             }
         }
     }
+
+    private static DiscoverySnapshot apiWith(List<String> securityScheme, List<String> policies) {
+        Map<String, Object> payload = new java.util.HashMap<>();
+        payload.put("name", "TierAPI");
+        payload.put("version", "1.0.0");
+        payload.put("context", "/tier");
+        payload.put("endpointConfig", Map.of("production_endpoints", Map.of("url", "https://b.example.com")));
+        if (securityScheme != null) payload.put("securityScheme", securityScheme);
+        if (policies != null) payload.put("policies", policies);
+        return DiscoverySnapshot.builder().sourceId("tier").sourceName("TierAPI").sourceVersion("1.0.0")
+                .payload(payload).build();
+    }
+
+    @Test
+    void mutualSsl_emitsJwt_andWarning_butNoMtlsPlugin() {
+        // mutual-TLS has no declarative Kong plugin; it must be surfaced as a manual-review warning,
+        // never silently dropped (the API would otherwise lose its mandatory client-cert posture).
+        TranslatedApi api = translator().translate(
+                apiWithSecurity(List.of("oauth2", "mutualssl", "mutualssl_mandatory")));
+        assertTrue(pluginNames(api).contains("jwt"), "oauth2 → jwt");
+        assertFalse(pluginNames(api).stream().anyMatch(n -> n.contains("mtls")), "no declarative mtls plugin exists");
+        assertTrue(api.getWarnings().stream().anyMatch(w -> w.contains("mutual-TLS") && w.contains("mtls-auth")),
+                "mutualssl must be surfaced as a manual-review warning, never silent");
+    }
+
+    @Test
+    void customTierThatDoesNotResolve_emitsNoRateLimit_butWarns() {
+        // policies has only a custom tier (not in the fallback map / discovered tiers) + Unlimited →
+        // the API would be silently UNTHROTTLED on Kong. It must warn instead of dropping silently.
+        TranslatedApi api = translator().translate(apiWith(List.of("oauth2"), List.of("BankGold", "Unlimited")));
+        assertFalse(pluginNames(api).contains("rate-limiting"), "unresolved tier → no rate-limiting plugin");
+        assertTrue(api.getWarnings().stream()
+                        .anyMatch(w -> w.contains("could not be resolved") && w.contains("BankGold")),
+                "an unresolved throttle tier must be warned, never silently dropped");
+    }
+
+    @Test
+    void customTierWithStandardFallback_rateLimited_noUnresolvedWarning() {
+        // [BankGold (unresolved), Gold (resolves to 200), Unlimited] → rate-limiting from Gold, and NO
+        // "could not be resolved" warning because a rate limit WAS applied.
+        TranslatedApi api = translator().translate(apiWith(List.of("oauth2"), List.of("BankGold", "Gold", "Unlimited")));
+        assertTrue(pluginNames(api).contains("rate-limiting"), "standard Gold tier resolves → rate-limiting");
+        assertFalse(api.getWarnings().stream().anyMatch(w -> w.contains("could not be resolved")),
+                "a resolved fallback tier means no unresolved-tier warning");
+    }
 }

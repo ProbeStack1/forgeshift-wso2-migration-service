@@ -226,12 +226,27 @@ public class ApiTranslator {
         // 1) API-level throttling (policies array)
         List<String> policies = stringList(p.get("policies"));
         if (policies != null) {
+            boolean rateLimited = false;
+            List<String> unresolvedTiers = new ArrayList<>();
             for (String policy : policies) {
+                if ("Unlimited".equalsIgnoreCase(policy)) {
+                    continue; // Unlimited = no throttling
+                }
                 Integer rpm = tierRpm.get(policy);
-                if (rpm != null && !"Unlimited".equalsIgnoreCase(policy)) {
+                if (rpm != null) {
                     svcPlugins.add(rateLimit(rpm, tagsWith(tags, "wso2-tier:" + policy)));
+                    rateLimited = true;
                     break; // only one API-level rate-limit
                 }
+                unresolvedTiers.add(policy);
+            }
+            // A non-Unlimited tier that resolves to no rpm (custom tier not in the discovered tier
+            // definitions / fallback map) would otherwise leave the API UNTHROTTLED on Kong with no
+            // trace. Surface it so throttling is never silently lost.
+            if (!rateLimited && !unresolvedTiers.isEmpty()) {
+                warnings.add("API " + apiName + ": throttling tier(s) " + unresolvedTiers
+                        + " could not be resolved to a request rate (no matching discovered tier definition) — "
+                        + "NO rate-limiting plugin was emitted; configure Kong rate-limiting manually.");
             }
         }
 
@@ -260,6 +275,16 @@ public class ApiTranslator {
                         ? new LinkedHashMap<>(Map.of("anonymous", Wso2SecuritySchemes.ANONYMOUS_CONSUMER_ID))
                         : null;
                 svcPlugins.add(KongPlugin.builder().name("key-auth").config(kaCfg).enabled(true).tags(tags).build());
+            }
+            // Mutual-TLS has no declarative Kong plugin equivalent and is NOT auto-migrated. Without a
+            // warning the API's mandatory client-certificate posture would vanish silently (the route
+            // would still carry jwt/key-auth, but the mTLS requirement is gone).
+            boolean mtls = security.stream().anyMatch(s -> s != null
+                    && (s.trim().equalsIgnoreCase("mutualssl") || s.trim().equalsIgnoreCase("mutualssl_mandatory")));
+            if (mtls) {
+                warnings.add("API " + apiName + ": mutual-TLS (mutualssl) security is NOT auto-migrated — "
+                        + "Kong has no declarative mtls equivalent. Set up the Kong mtls-auth plugin + client CA "
+                        + "certificates manually so the mandatory client-certificate posture is preserved.");
             }
         }
 
