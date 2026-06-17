@@ -9,8 +9,14 @@ spring:
     active: ${SPRING_PROFILES_ACTIVE:local}
   data:
     mongodb:
-      uri: ${MONGODB_URI:mongodb://localhost:27017/forgeshift_migration}
-      database: ${MONGODB_DATABASE:forgeshift_migration}
+      # MUST be the SAME database discovery + assessment write to: the migration service uses one
+      # MongoTemplate both for its own migration_jobs AND to READ discovery's discovery_wso2_*
+      # snapshots (DiscoverySnapshotReader). A different db here => findLatestRevision returns 0 =>
+      # every migration translates 0. Default aligned with the discovery/assessment shared db.
+      # NOTE: when MONGODB_URI is set, its database path wins over the `database` property (Spring
+      # Data), so the URI's path must also be probestack-wso2-forgeshift.
+      uri: ${MONGODB_WSO2_URI:mongodb+srv://java-app:LszhHwotDeKBfG3a@probestack-nonprod.hdggqx.mongodb.net/probestack-wso2-forgeshift?appName=Probestack-nonprod}
+      database: ${MONGODB_WSO2_DATABASE:probestack-wso2-forgeshift}
       auto-index-creation: true
   jackson:
     default-property-inclusion: non_null
