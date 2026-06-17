@@ -129,20 +129,32 @@ public class ThrottlingTierResolver {
             return null;
         }
         if (p.get("defaultLimit") instanceof Map<?, ?> limit) {
-            Long count = asLong(limit.get("requestCount"));
-            if (count != null) {
-                return toPerMinute(count, str(limit.get("timeUnit")), asInt(limit.get("unitTime")));
+            Object rc = limit.get("requestCount");
+            if (rc instanceof Map<?, ?> rcMap) {
+                // WSO2 4.x shape: defaultLimit.requestCount is a NESTED object
+                // { requestCount: 5000, timeUnit: "min", unitTime: 1 } — the number lives one level deeper.
+                Long count = asLong(rcMap.get("requestCount"));
+                if (count != null) {
+                    return toPerMinute(count, str(rcMap.get("timeUnit")), asInt(rcMap.get("unitTime")));
+                }
+            } else {
+                // Flat shape: defaultLimit = { requestCount: 5000, timeUnit, unitTime }.
+                Long count = asLong(rc);
+                if (count != null) {
+                    return toPerMinute(count, str(limit.get("timeUnit")), asInt(limit.get("unitTime")));
+                }
             }
         }
         return parseRpm(str(p.get("description")));
     }
 
     private static final Pattern RATE = Pattern.compile(
-            "(\\d[\\d,]*)\\s+(?:request|event|call)s?(?:\\(s\\))?\\s+per\\s+"
+            // matches "5000 requests per minute" AND "5000 req/min" AND "1000 calls / hr"
+            "(\\d[\\d,]*)\\s*(?:req|request|event|call)s?(?:\\(s\\))?\\s*(?:/|per)\\s*"
                     + "(second|sec|minute|min|hour|hr|day|week|month|year)",
             Pattern.CASE_INSENSITIVE);
 
-    /** Parse "Allows N requests per &lt;unit&gt;" → requests-per-minute; null when no numeric rate. */
+    /** Parse "Allows N requests per &lt;unit&gt;" / "N req/min" → requests-per-minute; null when no numeric rate. */
     static Integer parseRpm(String description) {
         if (description == null) {
             return null;

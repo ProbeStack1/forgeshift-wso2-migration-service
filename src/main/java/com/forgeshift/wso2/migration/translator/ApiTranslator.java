@@ -282,9 +282,12 @@ public class ApiTranslator {
             boolean mtls = security.stream().anyMatch(s -> s != null
                     && (s.trim().equalsIgnoreCase("mutualssl") || s.trim().equalsIgnoreCase("mutualssl_mandatory")));
             if (mtls) {
-                warnings.add("API " + apiName + ": mutual-TLS (mutualssl) security is NOT auto-migrated — "
-                        + "Kong has no declarative mtls equivalent. Set up the Kong mtls-auth plugin + client CA "
-                        + "certificates manually so the mandatory client-certificate posture is preserved.");
+                warnings.add("API " + apiName + ": mutual-TLS (mutualssl) is NOT auto-migrated — Kong has no "
+                        + "declarative mtls equivalent and client CA certificates can't travel in the bundle. "
+                        + "MANUAL STEP to preserve the mandatory client-certificate check: (1) upload the API's "
+                        + "trusted client CA certificate to Kong as a ca_certificate, then (2) add the Kong "
+                        + "'mtls-auth' plugin to this service referencing that ca_certificate. Until you do, the "
+                        + "route is protected only by its token/key auth, NOT by client certificates.");
             }
         }
 

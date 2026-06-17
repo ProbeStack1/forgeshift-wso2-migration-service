@@ -69,7 +69,31 @@ public class SubscriptionTranslator {
             out.add(translateOne(app, subsByApp.getOrDefault(app.getSourceId(), List.of()),
                     credsByApp, schemesByApi));
         }
+        ensureUniqueUsernames(out);
         return out;
+    }
+
+    /**
+     * Kong + decK require a UNIQUE consumer username, but WSO2 application names are NOT unique —
+     * every user gets a "DefaultApplication", so two apps share that name and the bundle would carry
+     * two consumers with the same username. That makes {@code deck gateway validate} abort the WHOLE
+     * deploy ("inserting consumer by username defaultapplication"). Disambiguate any colliding username
+     * by appending the application's unique id (already the consumer's custom_id) so each stays unique
+     * and traceable; non-colliding usernames keep their clean app name.
+     */
+    private void ensureUniqueUsernames(List<TranslatedConsumer> consumers) {
+        Map<String, Integer> counts = new HashMap<>();
+        for (TranslatedConsumer c : consumers) {
+            if (c.getConsumer() != null && c.getConsumer().getUsername() != null) {
+                counts.merge(c.getConsumer().getUsername(), 1, Integer::sum);
+            }
+        }
+        for (TranslatedConsumer c : consumers) {
+            KongConsumer k = c.getConsumer();
+            if (k != null && k.getUsername() != null && counts.getOrDefault(k.getUsername(), 0) > 1) {
+                k.setUsername(k.getUsername() + "-" + slug(c.getWso2SourceId()));
+            }
+        }
     }
 
     private TranslatedConsumer translateOne(DiscoverySnapshot app, List<DiscoverySnapshot> appSubs,

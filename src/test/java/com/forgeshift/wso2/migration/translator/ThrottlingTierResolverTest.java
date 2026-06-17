@@ -52,10 +52,43 @@ class ThrottlingTierResolverTest {
         assertEquals(10000, map.get("Unlimited")); // untouched configured fallback still present
     }
 
+    @Test
+    void parsesSlashStyleRates() {
+        // WSO2 custom-tier descriptions look like "BankGold (5000 req/min)" — no "requests per".
+        assertEquals(5000, ThrottlingTierResolver.parseRpm("BankGold (5000 req/min)"));
+        assertEquals(1000, ThrottlingTierResolver.parseRpm("BankSilver (1000 req/min)"));
+        assertEquals(120, ThrottlingTierResolver.parseRpm("Allows 2 req/sec")); // 2/s → 120/min
+    }
+
+    @Test
+    void resolvesNestedDefaultLimit_wso2_4x_shape() {
+        // The real WSO2 4.x shape: defaultLimit.requestCount is a NESTED object, not a scalar — the
+        // number that previously fell through to the (unparseable) description lives one level deeper.
+        MigrationProperties props = new MigrationProperties();
+        DiscoverySnapshotReader stub = new DiscoverySnapshotReader(null, null) {
+            @Override
+            public List<DiscoverySnapshot> findLatestRevision(String c, String t, String r) {
+                return List.of(policyNested("BankGold", 5000, "min", 1));
+            }
+        };
+        ThrottlingTierResolver resolver = new ThrottlingTierResolver(stub, props);
+        assertEquals(5000, resolver.effectiveTierRpm("probestack", "carbon.super").get("BankGold"));
+    }
+
     private static DiscoverySnapshot policy(String name, String policyType, String description) {
         return DiscoverySnapshot.builder()
                 .sourceName(name)
                 .payload(Map.of("__policyType", policyType, "description", description))
+                .build();
+    }
+
+    private static DiscoverySnapshot policyNested(String name, int count, String timeUnit, int unitTime) {
+        Map<String, Object> requestCount = Map.of("requestCount", count, "timeUnit", timeUnit, "unitTime", unitTime);
+        Map<String, Object> defaultLimit = Map.of("type", "REQUESTCOUNTLIMIT", "requestCount", requestCount);
+        return DiscoverySnapshot.builder()
+                .sourceName(name)
+                .payload(Map.of("__policyType", "subscription", "defaultLimit", defaultLimit,
+                        "description", name + " (" + count + " req/min)"))
                 .build();
     }
 }

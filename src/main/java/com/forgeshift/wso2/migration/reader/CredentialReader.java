@@ -44,7 +44,9 @@ public class CredentialReader {
         private String keyType;       // PRODUCTION / SANDBOX
         private String keyManager;
         private String consumerKey;
-        private String consumerSecret;
+        // The OAuth2 client SECRET is deliberately NOT modelled or read. Kong never needs it: the jwt
+        // plugin verifies tokens by RSA signature + the public client-id (azp), and key-auth uses the
+        // consumer key as the Kong key. So a client secret can never reach the migrated bundle.
         private List<String> supportedGrantTypes;
         /** Key Manager RSA public signing cert (PEM), for jwt_secrets.rsa_public_key. May be null. */
         private String keyManagerPublicKeyPem;
@@ -66,7 +68,6 @@ public class CredentialReader {
                         .keyType(d.getString("keyType"))
                         .keyManager(d.getString("keyManager"))
                         .consumerKey(d.getString("consumerKey"))
-                        .consumerSecret(d.getString("consumerSecret"))
                         .supportedGrantTypes(stringList(d.get("supportedGrantTypes")))
                         .keyManagerPublicKeyPem(d.getString("keyManagerPublicKeyPem"))
                         .build());

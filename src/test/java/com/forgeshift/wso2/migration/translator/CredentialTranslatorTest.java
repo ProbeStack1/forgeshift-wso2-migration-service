@@ -24,7 +24,7 @@ class CredentialTranslatorTest {
         return AppCredential.builder()
                 .applicationId("app-uuid-5").applicationName("Seed05App")
                 .keyType("PRODUCTION").keyManager("Resident Key Manager")
-                .consumerKey("ck-abcdef123").consumerSecret("cs-supersecret")
+                .consumerKey("ck-abcdef123")
                 .supportedGrantTypes(List.of("client_credentials"))
                 .build();
     }
@@ -145,7 +145,8 @@ class CredentialTranslatorTest {
 
         assertThat(c.getJwt_secrets()).isNull();
         assertThat(c.getKeyauth_credentials()).isNull();
-        assertThat(r.getWarnings()).anyMatch(w -> w.contains("no OAuth2 credentials were captured"));
+        assertThat(r.getWarnings()).anyMatch(w -> w.contains("no OAuth2 keys were captured")
+                && w.contains("client secret is never written"));
     }
 
     @Test

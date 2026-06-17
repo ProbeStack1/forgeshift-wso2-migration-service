@@ -77,9 +77,11 @@ public class CredentialTranslator {
 
         if (creds == null || creds.isEmpty()) {
             result.getWarnings().add("Application " + display(appName, appId)
-                    + ": no OAuth2 credentials were captured (not visible to the assessment sync "
-                    + "account, or none generated) — the Kong consumer has no credential and the "
-                    + "service will reject its calls until one is added.");
+                    + ": no OAuth2 keys were captured from WSO2 (the app has no keys generated, or the "
+                    + "assessment account cannot read them). The Kong consumer was created but has NO "
+                    + "credential, so Kong will reject (401) its calls until you add one — generate the "
+                    + "app's keys in WSO2 and re-run the assessment capture, or add a Kong credential "
+                    + "manually. (Your OAuth2 client secret is never written to the bundle.)");
             return result;
         }
 
