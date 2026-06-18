@@ -201,17 +201,37 @@ public class Wso2BundleClient {
     }
 
     /**
-     * Downloads a (common or API-specific) operation policy's Synapse definition from WSO2
-     * ({@code GET /api/am/publisher/v4/operation-policies/{id}/content}). The endpoint returns a ZIP
-     * containing {@code <name>/<name>.j2} (the Synapse fragment) + {@code <name>/<name>.yaml} (the
-     * spec). Returns the {@code .j2} fragment so the custom-mediator catalog can recognise the policy
-     * (the discovery snapshot / export ZIP carry only the policy name + parameters, never the body).
-     * Returns null on failure or when the ZIP has no {@code .j2}. Needs the
-     * {@code apim:common_operation_policy_view} scope on the token.
+     * Downloads an operation policy's Synapse definition from WSO2 and returns the {@code .j2} fragment
+     * (the snapshot/export carry only the policy name + parameters, never the body). The content ZIP
+     * contains {@code <name>/<name>.j2} + {@code <name>/<name>.yaml}.
+     *
+     * <p>A common policy attached to an API is CLONED into an API-specific policy with a NEW id, served
+     * only from {@code /apis/{apiId}/operation-policies/{id}/content} (the common
+     * {@code /operation-policies/{id}/content} 404s for it). So we try the API-scoped endpoint first,
+     * then fall back to the common one. Needs {@code apim:api_view} (API-scoped) /
+     * {@code apim:common_operation_policy_view} (common) on the token. Returns null on failure.
      */
-    public String fetchOperationPolicyContent(String accessToken, Wso2Credentials creds, String policyId) {
+    public String fetchOperationPolicyContent(String accessToken, Wso2Credentials creds,
+                                              String apiId, String policyId) {
         String base = trimTrailingSlash(creds.getWso2BaseUrl());
-        String url = base + "/api/am/publisher/v4/operation-policies/" + policyId + "/content";
+        String j2 = null;
+        if (StringUtils.hasText(apiId)) {
+            j2 = downloadPolicyJ2(accessToken, creds, base + "/api/am/publisher/v4/apis/" + apiId
+                    + "/operation-policies/" + policyId + "/content");
+        }
+        if (j2 == null) {
+            j2 = downloadPolicyJ2(accessToken, creds, base
+                    + "/api/am/publisher/v4/operation-policies/" + policyId + "/content");
+        }
+        if (j2 == null) {
+            log.warn("operation-policy {} (api {}) content unavailable from both API-scoped and common endpoints",
+                    policyId, apiId);
+        }
+        return j2;
+    }
+
+    /** GET a content ZIP and return its {@code .j2} entry, or null on any failure / no .j2. */
+    private String downloadPolicyJ2(String accessToken, Wso2Credentials creds, String url) {
         try {
             byte[] zip = webClientFor(creds).get()
                     .uri(url)
@@ -231,14 +251,12 @@ public class Wso2BundleClient {
                     }
                 }
             }
-            log.warn("operation-policy {} content ZIP had no .j2 entry", policyId);
             return null;
         } catch (WebClientResponseException e) {
-            log.warn("fetchOperationPolicyContent({}) failed: status={} body={}",
-                    policyId, e.getStatusCode(), e.getResponseBodyAsString());
+            log.debug("op-policy content {} -> {} {}", url, e.getStatusCode(), e.getResponseBodyAsString());
             return null;
         } catch (Exception e) {
-            log.warn("fetchOperationPolicyContent({}) failed: {}", policyId, e.getMessage());
+            log.debug("op-policy content {} failed: {}", url, e.getMessage());
             return null;
         }
     }

@@ -1008,7 +1008,9 @@ public class MigrationService {
         for (Map.Entry<String, String> e : idToName.entrySet()) {
             String j2 = null;
             try {
-                j2 = wso2BundleClient.fetchOperationPolicyContent(token, creds, e.getKey());
+                // Pass the API id: a common policy attached to an API is cloned to an API-specific id
+                // served only from the API-scoped content endpoint.
+                j2 = wso2BundleClient.fetchOperationPolicyContent(token, creds, snap.getSourceId(), e.getKey());
             } catch (Exception ex) {
                 log.warn("op-policy {} content fetch failed: {}", e.getKey(), ex.getMessage());
             }
