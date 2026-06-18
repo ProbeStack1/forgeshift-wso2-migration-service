@@ -50,6 +50,19 @@ public class SubscriptionTranslator {
     public List<TranslatedConsumer> translate(List<DiscoverySnapshot> applications,
                                               List<DiscoverySnapshot> subscriptions,
                                               Map<String, List<AppCredential>> liveCreds) {
+        return translate(applications, subscriptions, liveCreds, Map.of());
+    }
+
+    /**
+     * As above, plus {@code schemesOverride} (apiId → securityScheme set, e.g. derived from the migrated
+     * APIs' actual auth plugins) overlaid on the assessment-captured schemes — so a consumer gets the
+     * credential TYPE (jwt vs key-auth) matching the API it subscribes to even when the assessment
+     * security collection is empty.
+     */
+    public List<TranslatedConsumer> translate(List<DiscoverySnapshot> applications,
+                                              List<DiscoverySnapshot> subscriptions,
+                                              Map<String, List<AppCredential>> liveCreds,
+                                              Map<String, Set<String>> schemesOverride) {
         // Dedupe applications by id
         Map<String, DiscoverySnapshot> appsById = new LinkedHashMap<>();
         for (DiscoverySnapshot a : applications) {
@@ -69,13 +82,14 @@ public class SubscriptionTranslator {
         // Load captured credentials + per-API security schemes once for the whole batch
         // (keyed by the run's company/tenant, taken from the first application snapshot).
         Map<String, List<AppCredential>> credsByApp = new LinkedHashMap<>();
-        Map<String, Set<String>> schemesByApi = Map.of();
+        Map<String, Set<String>> schemesByApi = new LinkedHashMap<>();
         DiscoverySnapshot first = appsById.values().stream().findFirst().orElse(null);
         if (first != null && props.getCredentials().isEnabled()) {
             credsByApp.putAll(credentialReader.readCredentialsByApplication(first.getCompanyName(), first.getWso2Tenant()));
-            schemesByApi = credentialReader.readSecuritySchemesByApi(first.getCompanyName(), first.getWso2Tenant());
+            schemesByApi.putAll(credentialReader.readSecuritySchemesByApi(first.getCompanyName(), first.getWso2Tenant()));
         }
         if (liveCreds != null && !liveCreds.isEmpty()) credsByApp.putAll(liveCreds);   // live-fetched keys win per app
+        if (schemesOverride != null && !schemesOverride.isEmpty()) schemesByApi.putAll(schemesOverride); // derived from migrated APIs' auth plugins
 
         List<TranslatedConsumer> out = new ArrayList<>();
         for (DiscoverySnapshot app : appsById.values()) {

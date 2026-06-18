@@ -355,9 +355,13 @@ public class MigrationService {
                 // the OAuth2 keys. Inert unless credentials.live-key-fetch is on. Client secret never read.
                 Map<String, List<CredentialReader.AppCredential>> liveCreds =
                         fetchLiveAppCredentials(wso2Creds, byType.getOrDefault("applications", List.of()));
+                // Credential TYPE per API from the auth plugin actually emitted (jwt → oauth2,
+                // key-auth → api_key), so a consumer subscribed to an api_key API gets a key-auth
+                // credential even when the assessment security collection is empty.
+                Map<String, Set<String>> schemesByApi = securitySchemesFromTranslatedApis(translatedApis);
                 List<TranslatedConsumer> tcs = subscriptionTranslator.translate(
                         byType.getOrDefault("applications", List.of()),
-                        byType.getOrDefault("subscriptions", List.of()), liveCreds);
+                        byType.getOrDefault("subscriptions", List.of()), liveCreds, schemesByApi);
                 translatedConsumers.addAll(tcs);
                 for (TranslatedConsumer tc : tcs) {
                     for (String w : tc.getWarnings()) {
@@ -1088,6 +1092,23 @@ public class MigrationService {
             out.put(appId, appCreds);
         }
         log.info("[credentials] live-fetched OAuth2 keys for {}/{} application(s)", out.size(), apps.size());
+        return out;
+    }
+
+    /** apiId → securityScheme set inferred from each migrated API's auth plugin (jwt→oauth2, key-auth→api_key). */
+    private static Map<String, Set<String>> securitySchemesFromTranslatedApis(List<TranslatedApi> apis) {
+        Map<String, Set<String>> out = new LinkedHashMap<>();
+        if (apis == null) return out;
+        for (TranslatedApi t : apis) {
+            if (t == null || t.getServicePlugins() == null) continue;
+            Set<String> schemes = new LinkedHashSet<>();
+            for (KongPlugin pl : t.getServicePlugins()) {
+                if (pl == null) continue;
+                if ("jwt".equals(pl.getName())) schemes.add("oauth2");
+                else if ("key-auth".equals(pl.getName())) schemes.add("api_key");
+            }
+            if (!schemes.isEmpty()) out.put(t.getWso2SourceId(), schemes);
+        }
         return out;
     }
 

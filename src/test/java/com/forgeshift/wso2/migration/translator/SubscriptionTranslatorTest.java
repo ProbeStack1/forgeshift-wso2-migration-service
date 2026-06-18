@@ -82,4 +82,30 @@ class SubscriptionTranslatorTest {
                 .containsEntry("algorithm", "RS256")
                 .containsEntry("rsa_public_key", pem);         // KM public key inlined → self-contained
     }
+
+    private static DiscoverySnapshot sub(String appId, String apiId) {
+        return DiscoverySnapshot.builder().sourceId(appId + ":" + apiId).sourceName("sub")
+                .companyName("acme").wso2Tenant("carbon.super")
+                .payload(Map.of("applicationId", appId, "apiId", apiId)).build();
+    }
+
+    @Test
+    void apiKeyScheme_fromOverride_recreatesKeyAuthCredentialNotJwt() {
+        Map<String, List<CredentialReader.AppCredential>> live = Map.of("id-1", List.of(
+                CredentialReader.AppCredential.builder()
+                        .applicationId("id-1").applicationName("MobileApp")
+                        .keyType("PRODUCTION").keyManager("Resident Key Manager")
+                        .consumerKey("KEY123").build()));
+        // The app subscribes to api-x, which the migrated API exposes as key-auth (api_key).
+        Map<String, java.util.Set<String>> schemes = Map.of("api-x", java.util.Set.of("api_key"));
+
+        List<TranslatedConsumer> out = translatorWithCreds().translate(
+                List.of(app("id-1", "MobileApp")), List.of(sub("id-1", "api-x")), live, schemes);
+
+        var ka = out.get(0).getConsumer().getKeyauth_credentials();
+        assertThat(ka).as("api_key scheme → key-auth credential").isNotNull().hasSize(1);
+        assertThat(ka.get(0)).containsEntry("key", "KEY123");  // INLINE: consumer key is the Kong key
+        assertThat(out.get(0).getConsumer().getJwt_secrets())
+                .as("api_key-only API → no jwt credential").isNull();
+    }
 }
