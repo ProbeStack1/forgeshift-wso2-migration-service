@@ -159,7 +159,7 @@ forgeshift:
     # Flip on staging with env CUSTOM_PLUGINS_ENABLED=true (or the relaxed-binding env var
     # FORGESHIFT_MIGRATION_CUSTOMPLUGINS_ENABLED=true on the current image) + restart.
     custom-plugins:
-      enabled: ${CUSTOM_PLUGINS_ENABLED:false}
+      enabled: ${CUSTOM_PLUGINS_ENABLED:true}
       require-dedicated-control-plane: ${CUSTOM_PLUGINS_REQUIRE_DEDICATED_CP:true}
       path: ${CUSTOM_PLUGINS_PATH:/custom-plugins}
 

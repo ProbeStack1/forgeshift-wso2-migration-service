@@ -172,6 +172,16 @@ public class MigrationService {
             // customPlugins switch + a live control-plane-type probe — it's a target property, not
             // per-sequence. Defaults to SERVERLESS_INLINE, so the existing behaviour is unchanged.
             TargetMode targetMode = resolveTargetMode(creds);
+            // Self-diagnostic surfaced in the report (warnings) so an operator can confirm WHY the mode
+            // resolved as it did — without shell access to the pod. Distinguishes "flag off" from
+            // "control plane not custom-plugin-capable" (e.g. stale Konnect PAT / serverless CP).
+            boolean cpCustomPluginCapable = props.getCustomPlugins().isEnabled()
+                    && customPluginClient.supportsCustomPlugins(creds);
+            String targetModeDiag = "Resolved target mode = " + targetMode
+                    + " [customPlugins.enabled=" + props.getCustomPlugins().isEnabled()
+                    + ", controlPlane=" + (creds == null ? null : creds.getControlPlaneId())
+                    + ", customPluginCapableCp=" + cpCustomPluginCapable + "].";
+            log.info("[job {}] {}", job.getId(), targetModeDiag);
             // Operator-supplied JWT claim→header projection: WSO2 keeps this in GLOBAL server config (apim.jwt),
             // not the API payload, so it can't be discovered — when supplied it's attached as the
             // forgeshift-jwt-claim-headers custom plugin (custom-plugin-capable control planes only).
@@ -213,6 +223,8 @@ public class MigrationService {
             // Warnings for every failed bundle so they show up in the report.
             // Seeded with any "skipped because already in Kong" warnings from dependency expansion.
             List<MigrationReport.Warning> warnings = new ArrayList<>(dependencyWarnings);
+            warnings.add(MigrationReport.Warning.builder()
+                    .resourceType("_migration").code("TARGET_MODE").message(targetModeDiag).build());
             for (DiscoverySnapshot s : apiSnapshots) {
                 String fail = bundleResult.failures.get(s.getSourceId());
                 if (fail != null) {
