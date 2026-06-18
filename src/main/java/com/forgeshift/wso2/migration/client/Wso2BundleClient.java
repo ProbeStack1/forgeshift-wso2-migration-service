@@ -200,6 +200,49 @@ public class Wso2BundleClient {
         }
     }
 
+    /**
+     * Downloads a (common or API-specific) operation policy's Synapse definition from WSO2
+     * ({@code GET /api/am/publisher/v4/operation-policies/{id}/content}). The endpoint returns a ZIP
+     * containing {@code <name>/<name>.j2} (the Synapse fragment) + {@code <name>/<name>.yaml} (the
+     * spec). Returns the {@code .j2} fragment so the custom-mediator catalog can recognise the policy
+     * (the discovery snapshot / export ZIP carry only the policy name + parameters, never the body).
+     * Returns null on failure or when the ZIP has no {@code .j2}. Needs the
+     * {@code apim:common_operation_policy_view} scope on the token.
+     */
+    public String fetchOperationPolicyContent(String accessToken, Wso2Credentials creds, String policyId) {
+        String base = trimTrailingSlash(creds.getWso2BaseUrl());
+        String url = base + "/api/am/publisher/v4/operation-policies/" + policyId + "/content";
+        try {
+            byte[] zip = webClientFor(creds).get()
+                    .uri(url)
+                    .header("Authorization", "Bearer " + accessToken)
+                    .accept(MediaType.APPLICATION_OCTET_STREAM, MediaType.parseMediaType("application/zip"))
+                    .retrieve()
+                    .bodyToMono(byte[].class)
+                    .timeout(Duration.ofSeconds(props.getWso2().getTimeoutSeconds()))
+                    .block();
+            if (zip == null || zip.length == 0) return null;
+            try (java.util.zip.ZipInputStream zis =
+                         new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(zip))) {
+                java.util.zip.ZipEntry e;
+                while ((e = zis.getNextEntry()) != null) {
+                    if (e.getName().toLowerCase().endsWith(".j2")) {
+                        return new String(zis.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                    }
+                }
+            }
+            log.warn("operation-policy {} content ZIP had no .j2 entry", policyId);
+            return null;
+        } catch (WebClientResponseException e) {
+            log.warn("fetchOperationPolicyContent({}) failed: status={} body={}",
+                    policyId, e.getStatusCode(), e.getResponseBodyAsString());
+            return null;
+        } catch (Exception e) {
+            log.warn("fetchOperationPolicyContent({}) failed: {}", policyId, e.getMessage());
+            return null;
+        }
+    }
+
     private WebClient webClientFor(Wso2Credentials creds) {
         HttpClient http = HttpClient.create()
                 .responseTimeout(Duration.ofSeconds(props.getWso2().getTimeoutSeconds()));

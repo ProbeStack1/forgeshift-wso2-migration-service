@@ -54,6 +54,12 @@ public final class KnownCustomMediatorTranslator {
             return null;
         }
 
+        // A risk-scoring policy stamps an X-Risk-Level header — either inside the <script> (mc.setProperty
+        // ('X-Risk-Level',..)) OR, as the real WSO2 op-policy does, the <script> computes a risk property
+        // and a sibling <property name="X-Risk-Level" .../> stamps it. Detect the header anywhere in the
+        // sequence so both shapes are recognised, not just the inline-in-script one.
+        boolean stampsRiskLevel = synapseXml.toLowerCase().contains("x-risk-level");
+
         NodeList children = seq.getChildNodes();
         for (int i = 0; i < children.getLength(); i++) {
             Node n = children.item(i);
@@ -73,7 +79,12 @@ public final class KnownCustomMediatorTranslator {
                 }
             } else if (local.equals("script")) {
                 String body = el.getTextContent() == null ? "" : el.getTextContent();
-                if (body.toLowerCase().contains("x-risk-level")) {
+                String lower = body.toLowerCase();
+                // inline X-Risk-Level set in the script, OR a risk-computing script paired with a
+                // sequence-level X-Risk-Level stamp (the production op-policy shape).
+                boolean isRiskScript = lower.contains("x-risk-level")
+                        || (stampsRiskLevel && lower.contains("risk"));
+                if (isRiskScript) {
                     int[] th = sortedThresholds(body);
                     Map<String, Object> cfg = th == null
                             ? RiskScoringPluginBuilder.buildConfig(null, null, null)

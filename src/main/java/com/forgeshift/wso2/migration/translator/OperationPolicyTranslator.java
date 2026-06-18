@@ -1,5 +1,6 @@
 package com.forgeshift.wso2.migration.translator;
 
+import com.forgeshift.wso2.migration.ai.TargetMode;
 import com.forgeshift.wso2.migration.domain.kong.KongPlugin;
 import lombok.Builder;
 import lombok.Data;
@@ -40,7 +41,21 @@ public final class OperationPolicyTranslator {
         @Builder.Default private List<String> warnings = new ArrayList<>();
     }
 
+    /** Back-compat: serverless mode, no custom-plugin catalog (custom script policies → manual review). */
     public static Result translate(Map<String, Object> apiPayload, String apiName, List<String> tags) {
+        return translate(apiPayload, apiName, tags, TargetMode.SERVERLESS_INLINE, null);
+    }
+
+    /**
+     * As {@link #translate(Map, String, List)} but, in {@code CUSTOM_PLUGIN} mode, a custom (non-built-in)
+     * operation policy whose Synapse body is supplied in {@code opPolicyDefs} (keyed by policyId or
+     * policyName — fetched live from WSO2's {@code /operation-policies/{id}/content}) is run through the
+     * deterministic {@link KnownCustomMediatorTranslator} catalog. A recognised policy becomes its
+     * pre-built Kong plugin instance (the handler/schema asset is uploaded by name in DeckBundleDeployer);
+     * anything the catalog doesn't recognise stays a manual-review warning. No AI.
+     */
+    public static Result translate(Map<String, Object> apiPayload, String apiName, List<String> tags,
+                                   TargetMode mode, Map<String, String> opPolicyDefs) {
         Result result = Result.builder().build();
         if (apiPayload == null) return result;
 
@@ -60,13 +75,40 @@ public final class OperationPolicyTranslator {
 
         List<String> unsupported = new ArrayList<>();
         List<String> customMapped = new ArrayList<>();
+        List<Map<String, Object>> customCandidates = new ArrayList<>();
         Map<String, Object> reqCfg = new LinkedHashMap<>();
-        applyTo(request, reqCfg, true, unsupported, customMapped);
+        applyTo(request, reqCfg, true, unsupported, customMapped, customCandidates);
         if (!reqCfg.isEmpty()) result.getPlugins().add(plugin("request-transformer", reqCfg, tags));
 
         Map<String, Object> respCfg = new LinkedHashMap<>();
-        applyTo(response, respCfg, false, unsupported, customMapped);
+        applyTo(response, respCfg, false, unsupported, customMapped, customCandidates);
         if (!respCfg.isEmpty()) result.getPlugins().add(plugin("response-transformer", respCfg, tags));
+
+        // Custom (non-header) operation policies. In CUSTOM_PLUGIN mode, try the deterministic
+        // custom-mediator catalog against each policy's fetched Synapse body (opPolicyDefs, keyed by
+        // policyId/policyName). A recognised policy → its pre-built Kong plugin instance (the
+        // handler/schema asset is uploaded by name in DeckBundleDeployer); the rest stay manual-review.
+        String apiId = str(apiPayload.get("id"));
+        if (apiId == null) apiId = apiName;
+        List<String> migratedToPlugin = new ArrayList<>();
+        for (Map<String, Object> pol : customCandidates) {
+            String name = str(pol.get("policyName"));
+            String synapse = mode == TargetMode.CUSTOM_PLUGIN ? lookupDef(opPolicyDefs, pol) : null;
+            TranslatedMediationPolicy cat = (synapse == null || synapse.isBlank()) ? null
+                    : KnownCustomMediatorTranslator.translate(apiId, apiName,
+                            name == null ? "op-policy" : name, wrapSequence(synapse), "request", tags);
+            if (cat != null && cat.getPlugin() != null) {
+                result.getPlugins().add(cat.getPlugin());
+                migratedToPlugin.add(name == null ? "custom-policy" : name);
+            } else {
+                unsupported.add(name == null ? "unnamed-policy" : name);
+            }
+        }
+        if (!migratedToPlugin.isEmpty()) {
+            result.getWarnings().add("API " + apiName + ": custom operation policies migrated to a pre-built "
+                    + "Kong custom plugin from the catalog (no AI — verify the generated config): "
+                    + String.join(", ", new LinkedHashSet<>(migratedToPlugin)) + ".");
+        }
 
         if (!customMapped.isEmpty()) {
             result.getWarnings().add("API " + apiName + ": custom operation policies mapped to a header "
@@ -110,7 +152,8 @@ public final class OperationPolicyTranslator {
      */
     @SuppressWarnings("unchecked")
     private static void applyTo(List<Map<String, Object>> policies, Map<String, Object> cfg, boolean requestFlow,
-                                List<String> unsupported, List<String> customMapped) {
+                                List<String> unsupported, List<String> customMapped,
+                                List<Map<String, Object>> customCandidates) {
         for (Map<String, Object> pol : policies) {
             String name = str(pol.get("policyName"));
             Map<String, Object> params = pol.get("parameters") instanceof Map<?, ?> pm
@@ -167,7 +210,9 @@ public final class OperationPolicyTranslator {
                         addToList(cfg, "replace", "headers", hName + ":" + hValue); // WSO2 "set" = overwrite-or-add
                         customMapped.add(has(name) ? name : "custom-policy");
                     } else {
-                        unsupported.add(has(name) ? name : "unnamed-policy");
+                        // Not a header policy. In CUSTOM_PLUGIN mode the caller tries the custom-mediator
+                        // catalog against its Synapse body; otherwise it becomes a manual-review warning.
+                        customCandidates.add(pol);
                     }
                 }
             }
@@ -209,5 +254,25 @@ public final class OperationPolicyTranslator {
 
     private static String str(Object o) {
         return o == null ? null : o.toString();
+    }
+
+    /** The fetched Synapse body for a policy entry, looked up by policyId first, then policyName. */
+    private static String lookupDef(Map<String, String> defs, Map<String, Object> pol) {
+        if (defs == null || defs.isEmpty()) return null;
+        String id = str(pol.get("policyId"));
+        String byId = id == null ? null : defs.get(id);
+        if (byId != null) return byId;
+        String name = str(pol.get("policyName"));
+        return name == null ? null : defs.get(name);
+    }
+
+    /**
+     * An operation-policy {@code .j2} is a Synapse <i>fragment</i> (several top-level mediators), not a
+     * single-rooted document. Wrap it in a {@code <sequence>} so the catalog's XML parser accepts it.
+     */
+    private static String wrapSequence(String fragment) {
+        String f = fragment == null ? "" : fragment.trim();
+        if (f.regionMatches(true, 0, "<sequence", 0, "<sequence".length())) return f;
+        return "<sequence xmlns=\"http://ws.apache.org/ns/synapse\" name=\"op\">" + f + "</sequence>";
     }
 }

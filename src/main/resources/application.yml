@@ -126,7 +126,7 @@ forgeshift:
     # baseUrl / admin creds / DCR client are resolved per request from
     # the wso2_profiles collection.
     wso2:
-      publisher-scope: ${WSO2_PUBLISHER_SCOPE:apim:api_view apim:api_create apim:api_publish apim:api_import_export}
+      publisher-scope: ${WSO2_PUBLISHER_SCOPE:apim:api_view apim:api_create apim:api_publish apim:api_import_export apim:common_operation_policy_view}
       token-path: ${WSO2_TOKEN_PATH:/oauth2/token}
       # APIM 4.x export endpoint — query-string form. The client appends
       # ?apiId=...&format=...&preserveStatus=... at call time.

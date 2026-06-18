@@ -1,5 +1,6 @@
 package com.forgeshift.wso2.migration.translator;
 
+import com.forgeshift.wso2.migration.ai.TargetMode;
 import com.forgeshift.wso2.migration.domain.kong.KongPlugin;
 import org.junit.jupiter.api.Test;
 
@@ -117,5 +118,69 @@ class OperationPolicyTranslatorTest {
         OperationPolicyTranslator.Result r = OperationPolicyTranslator.translate(Map.of("name", "x"), "API", List.of("t"));
         assertThat(r.getPlugins()).isEmpty();
         assertThat(r.getWarnings()).isEmpty();
+    }
+
+    /** The real fraudRiskScoring op-policy .j2 (fragment): script computes fs_risk + a sibling property
+     *  stamps X-Risk-Level. Fed to the translator via opPolicyDefs keyed by policyId. */
+    private static final String FRAUD_RISK_J2 =
+            "<property name=\"fs_amount\" expression=\"$trp:X-Txn-Amount\" scope=\"default\"/>"
+          + "<script language=\"js\"><![CDATA["
+          + "  var amount = parseFloat(mc.getProperty('fs_amount')) || 0;"
+          + "  var risk='low';"
+          + "  if (amount >= 10000) { risk='high'; } else if (amount >= 2000) { risk='medium'; }"
+          + "  mc.setProperty('fs_risk', risk);"
+          + "  if (risk=='high' && amount >= 50000) { mc.setProperty('fs_block','yes'); }"
+          + "]]></script>"
+          + "<property name=\"X-Risk-Level\" expression=\"$ctx:fs_risk\" scope=\"transport\"/>";
+
+    private static Map<String, Object> customPolicy(String name, String policyId) {
+        return Map.of("policyName", name, "policyId", policyId, "parameters", new LinkedHashMap<>());
+    }
+
+    @Test
+    void customScriptOpPolicy_inCustomPluginMode_mapsToCatalogLuaPlugin_noManualReview() {
+        Map<String, Object> api = Map.of("id", "44dd940b", "apiPolicies", Map.of("request", List.of(
+                policy("addHeader", "headerName", "X-Env", "headerValue", "seed"),
+                customPolicy("fraudRiskScoring", "fr-1"))));
+        Map<String, String> defs = Map.of("fr-1", FRAUD_RISK_J2);
+
+        OperationPolicyTranslator.Result r = OperationPolicyTranslator.translate(
+                api, "PolicyAPI", List.of("t"), TargetMode.CUSTOM_PLUGIN, defs);
+
+        // built-in addHeader still becomes a request-transformer
+        assertThat(named(r, "request-transformer")).isNotNull();
+        // the JS risk policy becomes the catalog Lua plugin with thresholds parsed from the script
+        KongPlugin risk = named(r, "forgeshift-risk-scoring");
+        assertThat(risk).isNotNull();
+        assertThat(risk.getConfig())
+                .containsEntry("medium_amount", 2000)
+                .containsEntry("high_amount", 10000)
+                .containsEntry("block_amount", 50000);
+        assertThat(r.getWarnings()).anyMatch(w -> w.contains("custom plugin") && w.contains("no AI"));
+        assertThat(r.getWarnings()).noneMatch(w -> w.contains("manual review") && w.contains("fraudRiskScoring"));
+    }
+
+    @Test
+    void customScriptOpPolicy_inServerlessMode_staysManualReview() {
+        Map<String, Object> api = Map.of("id", "44dd940b", "apiPolicies", Map.of("request", List.of(
+                customPolicy("fraudRiskScoring", "fr-1"))));
+
+        OperationPolicyTranslator.Result r = OperationPolicyTranslator.translate(api, "PolicyAPI", List.of("t"));
+
+        assertThat(named(r, "forgeshift-risk-scoring")).isNull();
+        assertThat(r.getWarnings()).anyMatch(w -> w.contains("manual review") && w.contains("fraudRiskScoring"));
+    }
+
+    @Test
+    void customScriptOpPolicy_customPluginMode_butNoDefinition_staysManualReview() {
+        // CUSTOM_PLUGIN mode but the .j2 couldn't be fetched (empty defs) → no guessing, manual review.
+        Map<String, Object> api = Map.of("id", "x", "apiPolicies", Map.of("request", List.of(
+                customPolicy("fraudRiskScoring", "fr-1"))));
+
+        OperationPolicyTranslator.Result r = OperationPolicyTranslator.translate(
+                api, "PolicyAPI", List.of("t"), TargetMode.CUSTOM_PLUGIN, Map.of());
+
+        assertThat(named(r, "forgeshift-risk-scoring")).isNull();
+        assertThat(r.getWarnings()).anyMatch(w -> w.contains("manual review") && w.contains("fraudRiskScoring"));
     }
 }

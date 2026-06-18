@@ -5,7 +5,9 @@ import com.forgeshift.wso2.migration.config.MigrationProperties;
 import com.forgeshift.wso2.migration.domain.kong.CustomPluginArtifact;
 import com.forgeshift.wso2.migration.domain.kong.KongPlugin;
 import com.forgeshift.wso2.migration.translator.CustomScopeRolePluginBuilder;
+import com.forgeshift.wso2.migration.translator.HmacSignerPluginBuilder;
 import com.forgeshift.wso2.migration.translator.JwtClaimHeaderPluginBuilder;
+import com.forgeshift.wso2.migration.translator.RiskScoringPluginBuilder;
 import com.forgeshift.wso2.migration.deck.BundleBuilder;
 import com.forgeshift.wso2.migration.deck.BundleResult;
 import com.forgeshift.wso2.migration.deck.DeckYamlBuilder;
@@ -133,6 +135,10 @@ public class DeckBundleDeployer {
         Map<String, CustomPluginArtifact> serviceAssets = new LinkedHashMap<>();
         serviceAssets.put(CustomScopeRolePluginBuilder.PLUGIN_NAME, scopeBuilder.asset());
         serviceAssets.put(JwtClaimHeaderPluginBuilder.PLUGIN_NAME, JwtClaimHeaderPluginBuilder.asset());
+        // Catalog plugins emitted from custom operation policies (OperationPolicyTranslator): the
+        // handler/schema are fixed assets, the per-policy config travels on the plugin instance.
+        serviceAssets.put(RiskScoringPluginBuilder.PLUGIN_NAME, RiskScoringPluginBuilder.asset());
+        serviceAssets.put(HmacSignerPluginBuilder.PLUGIN_NAME, HmacSignerPluginBuilder.asset());
         if (apis != null) {
             for (Map.Entry<String, CustomPluginArtifact> e : serviceAssets.entrySet()) {
                 if (apis.stream().anyMatch(a -> referencesPlugin(a, e.getKey()))) {

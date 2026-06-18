@@ -93,6 +93,19 @@ public class ApiTranslator {
      */
     public TranslatedApi translate(DiscoverySnapshot snap, Wso2ApiBundle bundle,
                                    Map<String, Object> assessmentApiJson, TargetMode mode) {
+        return translate(snap, bundle, assessmentApiJson, mode, Map.of());
+    }
+
+    /**
+     * As {@link #translate(DiscoverySnapshot, Wso2ApiBundle, Map, TargetMode)} but with the fetched
+     * custom operation-policy Synapse bodies ({@code opPolicyDefs}, keyed by policyId/policyName). In
+     * {@code CUSTOM_PLUGIN} mode a recognised custom op-policy (e.g. a JS risk-scoring policy) is then
+     * migrated to its pre-built Kong custom plugin via the catalog instead of becoming a manual-review
+     * warning. Pass an empty map for serverless mode / when WSO2 op-policy content is unavailable.
+     */
+    public TranslatedApi translate(DiscoverySnapshot snap, Wso2ApiBundle bundle,
+                                   Map<String, Object> assessmentApiJson, TargetMode mode,
+                                   Map<String, String> opPolicyDefs) {
         Map<String, Object> bundleApi = bundle != null && bundle.getApiJson() != null
                 ? bundle.getApiJson() : null;
 
@@ -331,7 +344,8 @@ public class ApiTranslator {
 
         // 4b) AM 4.x operation policies (apiPolicies + operations[].operationPolicies) → request/
         // response-transformer for the header/query/path/method built-ins; the rest become warnings.
-        OperationPolicyTranslator.Result opPolicies = OperationPolicyTranslator.translate(p, apiName, tags);
+        OperationPolicyTranslator.Result opPolicies =
+                OperationPolicyTranslator.translate(p, apiName, tags, mode, opPolicyDefs);
         svcPlugins.addAll(opPolicies.getPlugins());
         warnings.addAll(opPolicies.getWarnings());
 

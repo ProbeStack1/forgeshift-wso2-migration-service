@@ -177,7 +177,8 @@ public class MigrationProperties {
          * {@code 500 / code 903220 "Failed to get API"}.
          */
         private String publisherScope =
-                "apim:api_view apim:api_create apim:api_publish apim:api_import_export";
+                "apim:api_view apim:api_create apim:api_publish apim:api_import_export "
+                + "apim:common_operation_policy_view";
         private String tokenPath = "/oauth2/token";
         /**
          * APIM Publisher REST API export endpoint. WSO2 4.x exposes this as

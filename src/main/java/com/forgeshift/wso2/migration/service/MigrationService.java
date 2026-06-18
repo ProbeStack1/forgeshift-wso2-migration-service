@@ -237,6 +237,19 @@ public class MigrationService {
             scopeApplicationsForSelectedSubscriptions(byType, req);
             List<DiscoverySnapshot> scopeSnapshots = byType.getOrDefault("scopes", List.of());
 
+            // Custom AM 4.x operation policies carry their Synapse body only in WSO2's
+            // /operation-policies/{id}/content (not the discovery snapshot or the export ZIP), so when
+            // targeting a custom-plugin-capable CP we fetch it live and feed it to the translator's
+            // catalog. One token for the whole run; per-API/per-policy failures degrade to manual-review.
+            String opPolicyToken = null;
+            if (targetMode == TargetMode.CUSTOM_PLUGIN
+                    && wso2Creds != null && !"missing".equals(wso2Creds.getSource())) {
+                try {
+                    opPolicyToken = wso2BundleClient.acquireToken(wso2Creds);
+                } catch (Exception e) {
+                    log.warn("Custom op-policy fetch skipped — WSO2 token failed: {}", e.getMessage());
+                }
+            }
             for (DiscoverySnapshot s : apiSnapshots) {
                 Wso2ApiBundle bundle = bundleResult.bundles.get(s.getSourceId());
                 // Third reconcile source: the assessment's stored API config from GCS
@@ -244,7 +257,8 @@ public class MigrationService {
                 Map<String, Object> assessmentJson = assessmentSourceReader.readApiConfig(
                         req.getCompanyName(), req.getWso2Tenant(), req.getEnvClassification(),
                         s.getSourceName(), s.getSourceVersion(), s.getSourceId());
-                TranslatedApi t = apiTranslator.translate(s, bundle, assessmentJson, targetMode);
+                Map<String, String> opPolicyDefs = fetchOpPolicyDefs(opPolicyToken, wso2Creds, s);
+                TranslatedApi t = apiTranslator.translate(s, bundle, assessmentJson, targetMode, opPolicyDefs);
                 attachClaimHeaderPlugin(t, claimHeaderCfg, targetMode);
                 translatedApis.add(t);
                 for (String w : t.getWarnings()) {
@@ -953,6 +967,64 @@ public class MigrationService {
                     .build());
         }
         return details;
+    }
+
+    /** Built-in AM 4.x operation policies handled declaratively by OperationPolicyTranslator — no need
+     *  to fetch their Synapse body for the custom-plugin catalog. */
+    private static final java.util.Set<String> BUILTIN_OP_POLICIES = java.util.Set.of(
+            "addheader", "setheader", "removeheader", "renameheader", "addqueryparam",
+            "removequeryparam", "rewriteresourcepath", "changehttpmethod", "rewritehttpmethod");
+
+    /**
+     * Fetch the Synapse bodies of an API's CUSTOM operation policies from WSO2 so the translator's
+     * catalog can recognise them (the snapshot/export carry only the policy name + params). Keyed by
+     * both policyId and policyName. Returns an empty map when the token is null (non-custom-plugin mode
+     * or WSO2 unreachable) or the API references no custom op-policies. Per-policy failures are skipped.
+     */
+    private Map<String, String> fetchOpPolicyDefs(String token, Wso2Credentials creds, DiscoverySnapshot snap) {
+        if (token == null || snap == null || snap.getPayload() == null) return Map.of();
+        Map<String, String> idToName = new LinkedHashMap<>();
+        Map<String, Object> p = snap.getPayload();
+        collectPolicyRefs(p.get("apiPolicies"), idToName);
+        if (p.get("operations") instanceof List<?> ops) {
+            for (Object o : ops) {
+                if (o instanceof Map<?, ?> om) collectPolicyRefs(om.get("operationPolicies"), idToName);
+            }
+        }
+        if (idToName.isEmpty()) return Map.of();
+        Map<String, String> defs = new LinkedHashMap<>();
+        for (Map.Entry<String, String> e : idToName.entrySet()) {
+            String j2 = null;
+            try {
+                j2 = wso2BundleClient.fetchOperationPolicyContent(token, creds, e.getKey());
+            } catch (Exception ex) {
+                log.warn("op-policy {} content fetch failed: {}", e.getKey(), ex.getMessage());
+            }
+            if (j2 != null && !j2.isBlank()) {
+                defs.put(e.getKey(), j2);                                  // by policyId
+                if (e.getValue() != null) defs.put(e.getValue(), j2);      // by policyName
+            }
+        }
+        return defs;
+    }
+
+    /** Collect (policyId → policyName) for non-built-in policies in a request/response/fault flow object. */
+    @SuppressWarnings("unchecked")
+    private static void collectPolicyRefs(Object policiesObj, Map<String, String> idToName) {
+        if (!(policiesObj instanceof Map<?, ?> m)) return;
+        for (String flow : List.of("request", "response", "fault")) {
+            Object arr = ((Map<String, Object>) m).get(flow);
+            if (!(arr instanceof List<?> l)) continue;
+            for (Object e : l) {
+                if (!(e instanceof Map<?, ?> pm)) continue;
+                Object id = ((Map<?, ?>) pm).get("policyId");
+                Object name = ((Map<?, ?>) pm).get("policyName");
+                if (id == null) continue;
+                String n = name == null ? null : name.toString();
+                if (n != null && BUILTIN_OP_POLICIES.contains(n.trim().toLowerCase())) continue;
+                idToName.putIfAbsent(id.toString(), n);
+            }
+        }
     }
 
     private static MigrationReport.Warning warn(String type, DiscoverySnapshot s, String code, String msg) {
