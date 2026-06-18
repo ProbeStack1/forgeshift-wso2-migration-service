@@ -98,4 +98,11 @@ public class StartMigrationRequest {
             "(wso2_assessment_resource_info.resourceDependencies) is used to resolve dependencies. " +
             "Required when includeDependencies=true.")
     private String assessmentTransactionId;
+
+    @Schema(description = "Operator-supplied JWT claim -> request-header projection. WSO2's backend-JWT claim " +
+            "config is GLOBAL server config (apim.jwt), not in any API payload, so it can't be discovered — " +
+            "supply it here. Applied via the forgeshift-jwt-claim-headers custom plugin when the target control " +
+            "plane supports custom plugins; ignored otherwise.",
+            example = "{\"sub\": \"X-Authenticated-User\", \"organization\": \"X-Org\"}")
+    private Map<String, String> claimHeaders;
 }

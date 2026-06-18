@@ -32,6 +32,13 @@ import org.springframework.stereotype.Component;
 @ConfigurationProperties(prefix = "anthropic")
 public class AnthropicProperties {
 
+    /**
+     * Master AI switch — OFF by default. While off, ALL AI translation is disabled regardless of the
+     * key, and the migration runs purely on the deterministic (rule-based) translators. Flip to true
+     * (and supply {@code api-key}) to re-enable AI in the future: {@code anthropic.enabled=true}.
+     */
+    private boolean enabled = false;
+
     /** Empty by default → AI translation disabled until a key is configured. Never hardcode a key here. */
     private String apiKey = "";
     private String baseUrl = "https://api.anthropic.com";
@@ -49,6 +56,6 @@ public class AnthropicProperties {
     private int maxLuaBytes = 51_200;
 
     public boolean isEnabled() {
-        return apiKey != null && !apiKey.isBlank();
+        return enabled && apiKey != null && !apiKey.isBlank();
     }
 }

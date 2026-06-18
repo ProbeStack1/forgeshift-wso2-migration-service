@@ -1,5 +1,6 @@
 package com.forgeshift.wso2.migration.translator;
 
+import com.forgeshift.wso2.migration.ai.TargetMode;
 import com.forgeshift.wso2.migration.config.MigrationProperties;
 import com.forgeshift.wso2.migration.domain.kong.KongPlugin;
 import com.forgeshift.wso2.migration.reader.DiscoverySnapshot;
@@ -171,5 +172,43 @@ class ApiTranslatorTest {
         assertTrue(pluginNames(api).contains("rate-limiting"), "standard Gold tier resolves → rate-limiting");
         assertFalse(api.getWarnings().stream().anyMatch(w -> w.contains("could not be resolved")),
                 "a resolved fallback tier means no unresolved-tier warning");
+    }
+
+    private static DiscoverySnapshot apiWithScopes() {
+        Map<String, Object> payload = new java.util.HashMap<>();
+        payload.put("name", "PaymentsAPI");
+        payload.put("version", "1.0.0");
+        payload.put("context", "/payments");
+        payload.put("endpointConfig", Map.of("production_endpoints", Map.of("url", "https://b.example.com")));
+        payload.put("securityScheme", List.of("oauth2"));
+        payload.put("operations", List.of(
+                Map.of("verb", "GET", "target", "/balance", "scopes", List.of("payments:read")),
+                Map.of("verb", "POST", "target", "/transfer", "scopes", List.of("payments:write"))));
+        return DiscoverySnapshot.builder().sourceId("pay").sourceName("PaymentsAPI").sourceVersion("1.0.0")
+                .payload(payload).build();
+    }
+
+    @Test
+    void customPluginMode_emitsScopeEnforcer_alongsideJwt_withPerMethodRules() {
+        TranslatedApi api = translator().translate(apiWithScopes(), null, null, TargetMode.CUSTOM_PLUGIN);
+        assertTrue(pluginNames(api).contains("jwt"), "oauth2 still emits jwt");
+        assertTrue(pluginNames(api).contains(CustomScopeRolePluginBuilder.PLUGIN_NAME),
+                "custom-plugin mode closes the scope silent-drop with the scope-enforcer plugin");
+        KongPlugin scope = api.getServicePlugins().stream()
+                .filter(p -> p.getName().equals(CustomScopeRolePluginBuilder.PLUGIN_NAME)).findFirst().orElseThrow();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> rules = (List<Map<String, Object>>) scope.getConfig().get("rules");
+        assertEquals(2, rules.size(), "one rule per distinct scope-set (read vs write)");
+        assertTrue(api.getWarnings().stream().anyMatch(w -> w.contains("scope enforcement")),
+                "the report should note the scope enforcement was migrated to a custom plugin");
+    }
+
+    @Test
+    void serverlessMode_neverEmitsScopeEnforcer_evenWhenScopesPresent() {
+        // The existing (serverless) path is unchanged: scopes stay a silent drop, no custom plugin.
+        assertFalse(pluginNames(translator().translate(apiWithScopes()))
+                .contains(CustomScopeRolePluginBuilder.PLUGIN_NAME));
+        assertFalse(pluginNames(translator().translate(apiWithScopes(), null, null, TargetMode.SERVERLESS_INLINE))
+                .contains(CustomScopeRolePluginBuilder.PLUGIN_NAME));
     }
 }

@@ -41,7 +41,9 @@ class DeckBundleDeployerTest {
         MigrationProperties props = new MigrationProperties();
         props.getDeck().getGit().setEnabled(true);
 
-        DeckBundleDeployer deployer = new DeckBundleDeployer(yaml, bundleBuilder, git, props);
+        // customPluginClient null is safe here: customPlugins.enabled defaults false, so
+        // registerCustomPlugins returns before touching the client.
+        DeckBundleDeployer deployer = new DeckBundleDeployer(yaml, bundleBuilder, git, props, null);
 
         when(yaml.buildFiles(any(), any(), any(), any(), any(), any()))
                 .thenReturn(Map.of("kong/dev/api-foo.yaml", "services: []"));

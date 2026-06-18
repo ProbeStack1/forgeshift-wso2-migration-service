@@ -1,6 +1,7 @@
 package com.forgeshift.wso2.migration.translator;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.forgeshift.wso2.migration.ai.TargetMode;
 import com.forgeshift.wso2.migration.bundle.Wso2ApiBundle;
 import com.forgeshift.wso2.migration.config.MigrationProperties;
 import com.forgeshift.wso2.migration.domain.kong.KongPlugin;
@@ -49,6 +50,9 @@ public class ApiTranslator {
 
     private final MigrationProperties props;
     private final ThrottlingTierResolver tierResolver;
+    /** Stateless + dependency-free → instantiated directly so the {@code @RequiredArgsConstructor}
+     *  signature (props, tierResolver) is unchanged for existing callers/tests. */
+    private final CustomScopeRolePluginBuilder scopeBuilder = new CustomScopeRolePluginBuilder();
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final List<String> ALL_CORS_METHODS = List.of(
             "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT");
@@ -78,6 +82,17 @@ public class ApiTranslator {
      */
     public TranslatedApi translate(DiscoverySnapshot snap, Wso2ApiBundle bundle,
                                    Map<String, Object> assessmentApiJson) {
+        return translate(snap, bundle, assessmentApiJson, TargetMode.SERVERLESS_INLINE);
+    }
+
+    /**
+     * As {@link #translate(DiscoverySnapshot, Wso2ApiBundle, Map)} but for a known target gateway
+     * {@code mode}. In {@code CUSTOM_PLUGIN} mode the API's WSO2 OAuth2 scopes are enforced via the
+     * deterministic {@code forgeshift-oauth-scope} custom plugin (Target 1). Serverless mode is
+     * byte-for-byte unchanged.
+     */
+    public TranslatedApi translate(DiscoverySnapshot snap, Wso2ApiBundle bundle,
+                                   Map<String, Object> assessmentApiJson, TargetMode mode) {
         Map<String, Object> bundleApi = bundle != null && bundle.getApiJson() != null
                 ? bundle.getApiJson() : null;
 
@@ -319,6 +334,20 @@ public class ApiTranslator {
         OperationPolicyTranslator.Result opPolicies = OperationPolicyTranslator.translate(p, apiName, tags);
         svcPlugins.addAll(opPolicies.getPlugins());
         warnings.addAll(opPolicies.getWarnings());
+
+        // 4c) OAuth2 scope enforcement (Target 1) — only when targeting a custom-plugin-capable CP.
+        // WSO2 binds required scopes to operations; today only jwt is emitted, so the scope check is
+        // silently dropped. The reusable forgeshift-oauth-scope plugin re-checks the bearer JWT's
+        // scope claim per operation and 403s on a miss. The asset is uploaded by DeckBundleDeployer.
+        if (mode == TargetMode.CUSTOM_PLUGIN) {
+            scopeBuilder.buildConfig(context, ops).ifPresent(cfg -> {
+                svcPlugins.add(KongPlugin.builder()
+                        .name(CustomScopeRolePluginBuilder.PLUGIN_NAME)
+                        .config(cfg).enabled(true).tags(tags).build());
+                warnings.add("API " + apiName + ": OAuth2 scope enforcement migrated to the '"
+                        + CustomScopeRolePluginBuilder.PLUGIN_NAME + "' custom plugin (verify the scope claim + rules).");
+            });
+        }
 
         // 5) Custom mediation: out of scope for MVP - emit a warning
         if (p.containsKey("mediationPolicies")

@@ -31,6 +31,26 @@ public class MigrationProperties {
     private Deck deck = new Deck();
     private Dependency dependency = new Dependency();
     private Credentials credentials = new Credentials();
+    private CustomPlugins customPlugins = new CustomPlugins();
+
+    /**
+     * Generation + automated upload of Konnect Dedicated Cloud <b>custom plugins</b> for WSO2
+     * features with no built-in Kong equivalent (e.g. OAuth2 scope enforcement). Off by default —
+     * when disabled the migration is byte-for-byte unchanged (serverless inline translation only).
+     */
+    @Data
+    public static class CustomPlugins {
+        /** Master switch. When false, no custom-plugin generation or upload happens at all. */
+        private boolean enabled = false;
+        /**
+         * When true, only generate/upload custom plugins after a live probe confirms the target
+         * control plane is custom-plugin-capable (cluster_type != serverless) — so a stale profile
+         * can never push a custom plugin to a control plane that would reject it.
+         */
+        private boolean requireDedicatedControlPlane = true;
+        /** Konnect core-entities sub-path for the custom-plugin asset (handler + schema). */
+        private String path = "/custom-plugins";
+    }
 
     /**
      * Recreate Kong consumer credentials from the OAuth2 keys captured by the

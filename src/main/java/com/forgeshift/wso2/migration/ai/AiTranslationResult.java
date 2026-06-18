@@ -39,8 +39,16 @@ public class AiTranslationResult {
     /** Translator self-rated confidence, 0..1. */
     private double confidence;
 
-    /** Generated Lua source (without the pcall wrapper — call sites add that). */
+    /** Generated Lua source (without the pcall wrapper — call sites add that). SERVERLESS_INLINE mode. */
     private String lua;
+
+    /** Which target this result is shaped for. */
+    @Builder.Default
+    private TargetMode mode = TargetMode.SERVERLESS_INLINE;
+
+    /** CUSTOM_PLUGIN mode: the two self-contained files of a Konnect Dedicated Cloud custom plugin. */
+    private String handlerLua;
+    private String schemaLua;
 
     /** APIs / mediators the model could not fully translate. */
     @Builder.Default
@@ -57,8 +65,15 @@ public class AiTranslationResult {
     /** Free-form notes from the model. */
     private String notes;
 
-    /** Convenience: usable Lua → snippet that callers can splice directly. */
+    /** Convenience: usable Lua → snippet that callers can splice directly (serverless inline). */
     public boolean isUsableLua() {
         return translatable && valid && lua != null && !lua.isBlank();
+    }
+
+    /** Convenience: a usable two-file custom plugin → ready to package + upload (dedicated). */
+    public boolean isUsableCustomPlugin() {
+        return translatable && valid
+                && handlerLua != null && !handlerLua.isBlank()
+                && schemaLua != null && !schemaLua.isBlank();
     }
 }

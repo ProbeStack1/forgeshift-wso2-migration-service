@@ -145,7 +145,16 @@ public class ThrottlingTierResolver {
                 }
             }
         }
-        return parseRpm(str(p.get("description")));
+        Integer fromDesc = parseRpm(str(p.get("description")));
+        if (fromDesc != null) {
+            return fromDesc;
+        }
+        // Custom Siddhi throttling policy: derive the rate from the canonical timeBatch + count idiom.
+        // Safe additive fallback — only fires when a `siddhiQuery` is actually present on the policy.
+        if (p.get("siddhiQuery") instanceof String sq) {
+            return SiddhiThrottleTranslator.toRequestsPerMinute(sq).orElse(null);
+        }
+        return null;
     }
 
     private static final Pattern RATE = Pattern.compile(

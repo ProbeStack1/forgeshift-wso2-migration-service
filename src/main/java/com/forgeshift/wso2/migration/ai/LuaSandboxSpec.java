@@ -140,4 +140,70 @@ public final class LuaSandboxSpec {
         for (String s : FORBIDDEN_TOKENS) sb.append("  ").append(s).append("\n");
         return sb.toString();
     }
+
+    // ----------------------------------------------------------------------------
+    // DEDICATED CLOUD custom plugins (handler.lua + schema.lua).
+    //
+    // A real Kong plugin runtime — far looser than serverless (full PDK, cosockets,
+    // shared dicts and subrequests are NOT forbidden) — but Konnect Dedicated Cloud
+    // still forbids the filesystem, dynamic code loading, the debug/ffi escapes, and
+    // BACKGROUND TIMERS / init_worker (plugin logic must be self-contained in two
+    // files, <= 100 KB each). schema.lua may only require kong.db.schema.typedefs.
+    // ----------------------------------------------------------------------------
+
+    /** Modules requireable from a Dedicated Cloud custom plugin (stock Kong/OpenResty only). */
+    public static final List<String> DEDICATED_ALLOWED_REQUIRES = List.of(
+            "cjson",
+            "cjson.safe",
+            "resty.sha256",
+            "resty.string",
+            "resty.aes",
+            "resty.hmac",
+            "resty.http",                       // external call-outs (Dedicated only)
+            "kong.db.schema.typedefs");         // schema.lua
+
+    /** Hard-forbidden tokens for a Dedicated Cloud custom plugin. */
+    public static final List<String> DEDICATED_FORBIDDEN_TOKENS = List.of(
+            "io.open",
+            "io.read",
+            "io.write",
+            "io.lines",
+            "io.popen",
+            "os.execute",
+            "os.exit",
+            "os.remove",
+            "os.rename",
+            "os.tmpname",
+            "package.path",
+            "package.cpath",
+            "package.loadlib",
+            "loadfile",
+            "dofile",
+            "loadstring",
+            "load(",
+            "debug.",
+            "ffi.",
+            "ngx.timer.at",                     // Dedicated Cloud: no background timers
+            "ngx.timer.every",
+            "setfenv",
+            "getfenv",
+            "rawset",
+            "rawget",
+            "_G[",
+            "_ENV");
+
+    /** Compose the allowlist/constraint block the LLM sees for the Dedicated Cloud custom-plugin prompt. */
+    public static String dedicatedAllowlistDocBlock() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("This runs as a REAL Kong custom plugin (handler.lua + schema.lua) on a Konnect\n");
+        sb.append("Dedicated Cloud data plane. The full Kong PDK is available. Constraints:\n");
+        sb.append("  - exactly two files, <= 100 KB each; logic fully self-contained\n");
+        sb.append("  - NO background timers (ngx.timer.*), NO init_worker phase, NO filesystem\n");
+        sb.append("  - schema.lua may only require kong.db.schema.typedefs\n");
+        sb.append("\nALLOWED require() modules:\n");
+        for (String s : DEDICATED_ALLOWED_REQUIRES) sb.append("  ").append(s).append("\n");
+        sb.append("\nFORBIDDEN — do not emit any of these tokens:\n");
+        for (String s : DEDICATED_FORBIDDEN_TOKENS) sb.append("  ").append(s).append("\n");
+        return sb.toString();
+    }
 }

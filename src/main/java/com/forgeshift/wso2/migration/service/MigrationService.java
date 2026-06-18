@@ -18,7 +18,11 @@ import com.forgeshift.wso2.migration.client.Wso2BundleClient;
 import com.forgeshift.wso2.migration.config.MigrationProperties;
 import com.forgeshift.wso2.migration.deck.BundleResult;
 import com.forgeshift.wso2.migration.translator.ApiProductTranslator;
+import com.forgeshift.wso2.migration.ai.TargetMode;
+import com.forgeshift.wso2.migration.client.KonnectCustomPluginClient;
+import com.forgeshift.wso2.migration.domain.kong.KongPlugin;
 import com.forgeshift.wso2.migration.translator.ApiTranslator;
+import com.forgeshift.wso2.migration.translator.JwtClaimHeaderPluginBuilder;
 import com.forgeshift.wso2.migration.translator.CertificateTranslator;
 import com.forgeshift.wso2.migration.translator.MediationPolicyTranslator;
 import com.forgeshift.wso2.migration.translator.SubscriptionTranslator;
@@ -67,6 +71,7 @@ public class MigrationService {
     private final Wso2ProfileReader wso2ProfileReader;
     private final Wso2BundleDownloadService bundleDownloadService;
     private final ApiTranslator apiTranslator;
+    private final KonnectCustomPluginClient customPluginClient;
     private final ApiProductTranslator apiProductTranslator;
     private final SubscriptionTranslator subscriptionTranslator;
     private final CertificateTranslator certificateTranslator;
@@ -163,6 +168,15 @@ public class MigrationService {
             job.setKonnectBaseUrl(creds.getKonnectBaseUrl());
             jobRepository.save(job);
 
+            // Decide the gateway target mode ONCE (serverless inline vs custom plugin), gated by the
+            // customPlugins switch + a live control-plane-type probe — it's a target property, not
+            // per-sequence. Defaults to SERVERLESS_INLINE, so the existing behaviour is unchanged.
+            TargetMode targetMode = resolveTargetMode(creds);
+            // Operator-supplied JWT claim→header projection: WSO2 keeps this in GLOBAL server config (apim.jwt),
+            // not the API payload, so it can't be discovered — when supplied it's attached as the
+            // forgeshift-jwt-claim-headers custom plugin (custom-plugin-capable control planes only).
+            Map<String, Object> claimHeaderCfg = JwtClaimHeaderPluginBuilder.buildConfig(req.getClaimHeaders()).orElse(null);
+
             Map<String, List<DiscoverySnapshot>> byType = loadSnapshots(job, req);
 
             // ----- DEPENDENCY EXPANSION (opt-in) -----
@@ -230,7 +244,8 @@ public class MigrationService {
                 Map<String, Object> assessmentJson = assessmentSourceReader.readApiConfig(
                         req.getCompanyName(), req.getWso2Tenant(), req.getEnvClassification(),
                         s.getSourceName(), s.getSourceVersion(), s.getSourceId());
-                TranslatedApi t = apiTranslator.translate(s, bundle, assessmentJson);
+                TranslatedApi t = apiTranslator.translate(s, bundle, assessmentJson, targetMode);
+                attachClaimHeaderPlugin(t, claimHeaderCfg, targetMode);
                 translatedApis.add(t);
                 for (String w : t.getWarnings()) {
                     warnings.add(warn("apis", s, "TRANSLATION_NOTE", w));
@@ -260,7 +275,7 @@ public class MigrationService {
                 }
                 for (Map.Entry<String, String> seq : apiBundle.getSequences().entrySet()) {
                     TranslatedMediationPolicy med = mediationTranslator.translate(
-                            s.getSourceId(), s.getSourceName(), seq.getKey(), seq.getValue(), flowOf(seq.getKey()));
+                            s.getSourceId(), s.getSourceName(), seq.getKey(), seq.getValue(), flowOf(seq.getKey()), targetMode);
                     translatedMediations.add(med);
                     for (String w : med.getWarnings()) {
                         warnings.add(warn("mediationpolicies", s, "TRANSLATION_NOTE", w));
@@ -296,7 +311,7 @@ public class MigrationService {
                         }
                     }
                     TranslatedMediationPolicy med = mediationTranslator.translate(
-                            apiId != null ? apiId : s.getSourceId(), apiName, s.getSourceName(), xml, flow);
+                            apiId != null ? apiId : s.getSourceId(), apiName, s.getSourceName(), xml, flow, targetMode);
                     translatedMediations.add(med);
                     for (String w : med.getWarnings()) {
                         warnings.add(warn("mediationpolicies", s, "TRANSLATION_NOTE", w));
@@ -404,12 +419,14 @@ public class MigrationService {
                         Map<String, Object> mAssess = assessmentSourceReader.readApiConfig(
                                 req.getCompanyName(), req.getWso2Tenant(), req.getEnvClassification(),
                                 apiSnap.getSourceName(), apiSnap.getSourceVersion(), apiSnap.getSourceId());
-                        translatedApis.add(apiTranslator.translate(apiSnap, b, mAssess));
+                        TranslatedApi memberApi = apiTranslator.translate(apiSnap, b, mAssess, targetMode);
+                        attachClaimHeaderPlugin(memberApi, claimHeaderCfg, targetMode);
+                        translatedApis.add(memberApi);
                         if (b != null && b.getSequences() != null) {
                             for (Map.Entry<String, String> seq : b.getSequences().entrySet()) {
                                 TranslatedMediationPolicy med = mediationTranslator.translate(
                                         apiSnap.getSourceId(), apiSnap.getSourceName(),
-                                        seq.getKey(), seq.getValue(), flowOf(seq.getKey()));
+                                        seq.getKey(), seq.getValue(), flowOf(seq.getKey()), targetMode);
                                 translatedMediations.add(med);
                                 for (String w : med.getWarnings()) {
                                     warnings.add(warn("mediationpolicies", apiSnap, "TRANSLATION_NOTE", w));
@@ -720,6 +737,42 @@ public class MigrationService {
             log.info("[{}] loaded {} snapshots for migration {}", type, snaps.size(), job.getId());
         }
         return out;
+    }
+
+    /**
+     * Decide the gateway target mode for this migration. Defaults to {@code SERVERLESS_INLINE} (no
+     * change); flips to {@code CUSTOM_PLUGIN} only when the customPlugins switch is on AND (unless
+     * overridden) a live probe confirms the target control plane is custom-plugin-capable — so a
+     * stale profile can never push a custom plugin to a serverless control plane.
+     */
+    private TargetMode resolveTargetMode(KongKonnectCredentials creds) {
+        if (!props.getCustomPlugins().isEnabled()) {
+            return TargetMode.SERVERLESS_INLINE;
+        }
+        if (props.getCustomPlugins().isRequireDedicatedControlPlane()
+                && !customPluginClient.supportsCustomPlugins(creds)) {
+            log.warn("customPlugins.enabled=true but control plane {} is not custom-plugin-capable "
+                    + "(serverless/unknown) — using serverless inline translation.",
+                    creds == null ? null : creds.getControlPlaneId());
+            return TargetMode.SERVERLESS_INLINE;
+        }
+        return TargetMode.CUSTOM_PLUGIN;
+    }
+
+    /** Attach the operator-supplied JWT claim→header custom plugin to a translated API (custom-plugin mode only). */
+    private void attachClaimHeaderPlugin(TranslatedApi t, Map<String, Object> claimHeaderCfg, TargetMode mode) {
+        if (claimHeaderCfg == null || mode != TargetMode.CUSTOM_PLUGIN || t == null || t.getService() == null) {
+            return;
+        }
+        if (t.getServicePlugins() == null) {
+            t.setServicePlugins(new ArrayList<>());
+        }
+        List<String> tags = t.getService().getTags();
+        t.getServicePlugins().add(KongPlugin.builder()
+                .name(JwtClaimHeaderPluginBuilder.PLUGIN_NAME)
+                .config(claimHeaderCfg).enabled(true)
+                .tags(tags == null ? null : new ArrayList<>(tags))
+                .build());
     }
 
     private MigrationReport.DiffSummary computeDiff(KongKonnectCredentials creds,
