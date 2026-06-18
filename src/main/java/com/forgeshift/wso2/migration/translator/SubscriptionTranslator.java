@@ -38,6 +38,18 @@ public class SubscriptionTranslator {
 
     public List<TranslatedConsumer> translate(List<DiscoverySnapshot> applications,
                                               List<DiscoverySnapshot> subscriptions) {
+        return translate(applications, subscriptions, Map.of());
+    }
+
+    /**
+     * As {@link #translate(List, List)} but with live-fetched application credentials
+     * ({@code liveCreds}, keyed by applicationId) overlaid on the assessment-captured ones (live wins
+     * per app) — lets the migration recreate working consumer credentials even when the assessment
+     * never captured the OAuth2 keys into its collection.
+     */
+    public List<TranslatedConsumer> translate(List<DiscoverySnapshot> applications,
+                                              List<DiscoverySnapshot> subscriptions,
+                                              Map<String, List<AppCredential>> liveCreds) {
         // Dedupe applications by id
         Map<String, DiscoverySnapshot> appsById = new LinkedHashMap<>();
         for (DiscoverySnapshot a : applications) {
@@ -56,13 +68,14 @@ public class SubscriptionTranslator {
 
         // Load captured credentials + per-API security schemes once for the whole batch
         // (keyed by the run's company/tenant, taken from the first application snapshot).
-        Map<String, List<AppCredential>> credsByApp = Map.of();
+        Map<String, List<AppCredential>> credsByApp = new LinkedHashMap<>();
         Map<String, Set<String>> schemesByApi = Map.of();
         DiscoverySnapshot first = appsById.values().stream().findFirst().orElse(null);
         if (first != null && props.getCredentials().isEnabled()) {
-            credsByApp = credentialReader.readCredentialsByApplication(first.getCompanyName(), first.getWso2Tenant());
+            credsByApp.putAll(credentialReader.readCredentialsByApplication(first.getCompanyName(), first.getWso2Tenant()));
             schemesByApi = credentialReader.readSecuritySchemesByApi(first.getCompanyName(), first.getWso2Tenant());
         }
+        if (liveCreds != null && !liveCreds.isEmpty()) credsByApp.putAll(liveCreds);   // live-fetched keys win per app
 
         List<TranslatedConsumer> out = new ArrayList<>();
         for (DiscoverySnapshot app : appsById.values()) {

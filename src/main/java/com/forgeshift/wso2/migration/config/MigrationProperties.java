@@ -62,6 +62,15 @@ public class MigrationProperties {
     public static class Credentials {
         /** Master switch for emitting consumer credentials. */
         private boolean enabled = true;
+        /**
+         * When true, fetch each migrated application's PUBLIC OAuth2 consumer key live from the WSO2
+         * DevPortal (and the Key Manager's RSA public key from /oauth2/jwks) during the migration, so a
+         * Kong consumer gets a working jwt/key-auth credential even when the assessment never captured
+         * the keys into {@code credentialCollection}. The client SECRET is still never read/written.
+         */
+        private boolean liveKeyFetch = false;
+        /** OAuth scopes for the DevPortal token used by the live key fetch (read applications + keys). */
+        private String devPortalScope = "apim:subscribe apim:app_manage";
         /** Assessment-owned collection holding the captured OAuth2 keys. */
         private String credentialCollection = "wso2_application_credential_relations";
         /** Assessment-owned collection holding each API's securityScheme. */

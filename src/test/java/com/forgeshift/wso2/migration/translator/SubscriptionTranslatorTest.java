@@ -1,6 +1,7 @@
 package com.forgeshift.wso2.migration.translator;
 
 import com.forgeshift.wso2.migration.config.MigrationProperties;
+import com.forgeshift.wso2.migration.reader.CredentialReader;
 import com.forgeshift.wso2.migration.reader.DiscoverySnapshot;
 import org.junit.jupiter.api.Test;
 
@@ -52,5 +53,33 @@ class SubscriptionTranslatorTest {
                 List.of());
         List<String> usernames = out.stream().map(c -> c.getConsumer().getUsername()).toList();
         assertThat(usernames).containsExactlyInAnyOrder("mobileapp", "partnerportal");
+    }
+
+    /** With credentials enabled, a CredentialReader whose Mongo calls fail returns empty (try/caught). */
+    private SubscriptionTranslator translatorWithCreds() {
+        MigrationProperties props = new MigrationProperties();   // credentials.enabled = true by default
+        CredentialReader reader = new CredentialReader(null, props); // Mongo NPE → swallowed → empty
+        return new SubscriptionTranslator(props, new ThrottlingTierResolver(null, props),
+                reader, new CredentialTranslator(props));
+    }
+
+    @Test
+    void liveCreds_recreateAWorkingJwtCredential() {
+        String pem = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA\n-----END PUBLIC KEY-----\n";
+        Map<String, List<CredentialReader.AppCredential>> live = Map.of("id-1", List.of(
+                CredentialReader.AppCredential.builder()
+                        .applicationId("id-1").applicationName("MobileApp")
+                        .keyType("PRODUCTION").keyManager("Resident Key Manager")
+                        .consumerKey("CONSUMER_KEY_ABC").keyManagerPublicKeyPem(pem).build()));
+
+        List<TranslatedConsumer> out = translatorWithCreds().translate(
+                List.of(app("id-1", "MobileApp")), List.of(), live);
+
+        var jwts = out.get(0).getConsumer().getJwt_secrets();
+        assertThat(jwts).as("live-fetched key → a jwt credential").isNotNull().hasSize(1);
+        assertThat(jwts.get(0))
+                .containsEntry("key", "CONSUMER_KEY_ABC")      // azp the WSO2 token carries
+                .containsEntry("algorithm", "RS256")
+                .containsEntry("rsa_public_key", pem);         // KM public key inlined → self-contained
     }
 }

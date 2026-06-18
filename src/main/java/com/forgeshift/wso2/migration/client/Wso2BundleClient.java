@@ -19,7 +19,9 @@ import reactor.netty.http.client.HttpClient;
 
 import javax.net.ssl.SSLException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -257,6 +259,120 @@ public class Wso2BundleClient {
             return null;
         } catch (Exception e) {
             log.debug("op-policy content {} failed: {}", url, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Password-grant token for the WSO2 DevPortal API (different scopes than the publisher token), used
+     * by the live consumer-credential capture to read applications + their OAuth2 keys. Uses the same
+     * profile DCR client. Returns the access token; throws on failure so the caller can skip-and-warn.
+     */
+    public String acquireDevPortalToken(Wso2Credentials creds) {
+        String base = trimTrailingSlash(creds.getWso2BaseUrl());
+        String basic = Base64.getEncoder().encodeToString(
+                (creds.getClientId() + ":" + creds.getClientSecret()).getBytes());
+        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+        form.add("grant_type", "password");
+        form.add("username", creds.getUsername());
+        form.add("password", creds.getPassword());
+        form.add("scope", props.getCredentials().getDevPortalScope());
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = webClientFor(creds).post()
+                    .uri(base + props.getWso2().getTokenPath())
+                    .header("Authorization", "Basic " + basic)
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .accept(MediaType.APPLICATION_JSON)
+                    .body(BodyInserters.fromFormData(form))
+                    .retrieve().bodyToMono(Map.class)
+                    .timeout(Duration.ofSeconds(props.getWso2().getTimeoutSeconds()))
+                    .block();
+            Object t = body != null ? body.get("access_token") : null;
+            if (t == null) throw new IllegalStateException("DevPortal /oauth2/token returned no access_token");
+            return t.toString();
+        } catch (WebClientResponseException e) {
+            throw new IllegalStateException("DevPortal /oauth2/token returned "
+                    + e.getStatusCode() + " " + e.getResponseBodyAsString(), e);
+        }
+    }
+
+    /**
+     * Reads one application's OAuth2 keys from the DevPortal
+     * ({@code GET /api/am/devportal/v3/applications/{id}/oauth-keys}). Returns one map per key with
+     * {@code consumerKey} (the PUBLIC client id — the {@code azp} claim Kong's jwt plugin keys on),
+     * {@code keyType} (PRODUCTION/SANDBOX), {@code keyManager}. The client SECRET is intentionally not
+     * read. Empty list on failure or when the app has no keys generated.
+     */
+    public List<Map<String, String>> fetchApplicationOauthKeys(String devToken, Wso2Credentials creds, String appId) {
+        String base = trimTrailingSlash(creds.getWso2BaseUrl());
+        String url = base + "/api/am/devportal/v3/applications/" + appId + "/oauth-keys";
+        List<Map<String, String>> out = new ArrayList<>();
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = webClientFor(creds).get()
+                    .uri(url).header("Authorization", "Bearer " + devToken)
+                    .accept(MediaType.APPLICATION_JSON)
+                    .retrieve().bodyToMono(Map.class)
+                    .timeout(Duration.ofSeconds(props.getWso2().getTimeoutSeconds()))
+                    .block();
+            Object list = body == null ? null : body.get("list");
+            if (list instanceof List<?> l) {
+                for (Object e : l) {
+                    if (!(e instanceof Map<?, ?> km)) continue;
+                    Object ck = km.get("consumerKey");
+                    if (ck == null || !StringUtils.hasText(ck.toString())) continue;
+                    Map<String, String> k = new java.util.LinkedHashMap<>();
+                    k.put("consumerKey", ck.toString());
+                    if (km.get("keyType") != null) k.put("keyType", km.get("keyType").toString());
+                    if (km.get("keyManager") != null) k.put("keyManager", km.get("keyManager").toString());
+                    out.add(k);
+                }
+            }
+        } catch (WebClientResponseException e) {
+            log.warn("fetchApplicationOauthKeys({}) failed: status={} body={}",
+                    appId, e.getStatusCode(), e.getResponseBodyAsString());
+        } catch (Exception e) {
+            log.warn("fetchApplicationOauthKeys({}) failed: {}", appId, e.getMessage());
+        }
+        return out;
+    }
+
+    /**
+     * Fetches the WSO2 Key Manager's RSA public signing key from {@code GET /oauth2/jwks} (public, no
+     * auth) and returns it as an X.509 {@code SubjectPublicKeyInfo} PEM ({@code -----BEGIN PUBLIC KEY-----}),
+     * which is what Kong's jwt plugin needs as {@code rsa_public_key} to verify the WSO2-issued RS256
+     * tokens. Returns null on failure. One Key Manager per tenant → fetch once and reuse for all consumers.
+     */
+    public String fetchKeyManagerPublicKeyPem(Wso2Credentials creds) {
+        String base = trimTrailingSlash(creds.getWso2BaseUrl());
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> jwks = webClientFor(creds).get()
+                    .uri(base + "/oauth2/jwks")
+                    .accept(MediaType.APPLICATION_JSON)
+                    .retrieve().bodyToMono(Map.class)
+                    .timeout(Duration.ofSeconds(props.getWso2().getTimeoutSeconds()))
+                    .block();
+            Object keysObj = jwks == null ? null : jwks.get("keys");
+            if (!(keysObj instanceof List<?> keys) || keys.isEmpty()) return null;
+            Map<?, ?> sig = null;
+            for (Object o : keys) {
+                if (o instanceof Map<?, ?> k && "RSA".equals(k.get("kty"))
+                        && (k.get("use") == null || "sig".equals(k.get("use")))) { sig = k; break; }
+            }
+            if (sig == null && keys.get(0) instanceof Map<?, ?> k0) sig = k0;
+            if (sig == null) return null;
+            Object n = sig.get("n"), e = sig.get("e");
+            if (n == null || e == null) return null;
+            java.math.BigInteger modulus = new java.math.BigInteger(1, Base64.getUrlDecoder().decode(n.toString()));
+            java.math.BigInteger exponent = new java.math.BigInteger(1, Base64.getUrlDecoder().decode(e.toString()));
+            java.security.PublicKey pub = java.security.KeyFactory.getInstance("RSA")
+                    .generatePublic(new java.security.spec.RSAPublicKeySpec(modulus, exponent));
+            String b64 = Base64.getMimeEncoder(64, "\n".getBytes()).encodeToString(pub.getEncoded());
+            return "-----BEGIN PUBLIC KEY-----\n" + b64 + "\n-----END PUBLIC KEY-----\n";
+        } catch (Exception ex) {
+            log.warn("fetchKeyManagerPublicKeyPem failed: {}", ex.getMessage());
             return null;
         }
     }

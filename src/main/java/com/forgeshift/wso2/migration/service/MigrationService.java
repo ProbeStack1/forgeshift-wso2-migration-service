@@ -6,6 +6,7 @@ import com.forgeshift.wso2.migration.domain.MigrationReport;
 import com.forgeshift.wso2.migration.domain.MigrationState;
 import com.forgeshift.wso2.migration.dto.StartMigrationRequest;
 import com.forgeshift.wso2.migration.reader.AssessmentSourceReader;
+import com.forgeshift.wso2.migration.reader.CredentialReader;
 import com.forgeshift.wso2.migration.reader.DiscoverySnapshot;
 import com.forgeshift.wso2.migration.reader.DiscoverySnapshotReader;
 import com.forgeshift.wso2.migration.reader.KongKonnectCredentials;
@@ -349,9 +350,14 @@ public class MigrationService {
             }
 
             if (hasConsumerResources(job.getResourceTypes())) {
+                // Live-fetch each migrated app's PUBLIC consumer key + the Key Manager public key so the
+                // consumer gets a working jwt/key-auth credential even when the assessment never captured
+                // the OAuth2 keys. Inert unless credentials.live-key-fetch is on. Client secret never read.
+                Map<String, List<CredentialReader.AppCredential>> liveCreds =
+                        fetchLiveAppCredentials(wso2Creds, byType.getOrDefault("applications", List.of()));
                 List<TranslatedConsumer> tcs = subscriptionTranslator.translate(
                         byType.getOrDefault("applications", List.of()),
-                        byType.getOrDefault("subscriptions", List.of()));
+                        byType.getOrDefault("subscriptions", List.of()), liveCreds);
                 translatedConsumers.addAll(tcs);
                 for (TranslatedConsumer tc : tcs) {
                     for (String w : tc.getWarnings()) {
@@ -1039,6 +1045,50 @@ public class MigrationService {
                 idToName.putIfAbsent(id.toString(), n);
             }
         }
+    }
+
+    /**
+     * Live-fetch consumer credentials when enabled: per migrated application, read its PUBLIC OAuth2
+     * consumer key(s) from the WSO2 DevPortal + the Key Manager's RSA public key (once) from
+     * /oauth2/jwks, so {@code CredentialTranslator} can emit a working jwt/key-auth credential. The
+     * client SECRET is never read. Returns empty (skip) when disabled / no apps / WSO2 unreachable.
+     */
+    private Map<String, List<CredentialReader.AppCredential>> fetchLiveAppCredentials(
+            Wso2Credentials creds, List<DiscoverySnapshot> apps) {
+        Map<String, List<CredentialReader.AppCredential>> out = new LinkedHashMap<>();
+        if (!props.getCredentials().isEnabled() || !props.getCredentials().isLiveKeyFetch()
+                || apps == null || apps.isEmpty()
+                || creds == null || "missing".equals(creds.getSource())) {
+            return out;
+        }
+        String devToken;
+        try {
+            devToken = wso2BundleClient.acquireDevPortalToken(creds);
+        } catch (Exception e) {
+            log.warn("[credentials] live key fetch skipped — DevPortal token failed: {}", e.getMessage());
+            return out;
+        }
+        String kmPem = wso2BundleClient.fetchKeyManagerPublicKeyPem(creds);
+        if (kmPem == null) {
+            log.warn("[credentials] Key Manager public key unavailable from /oauth2/jwks — jwt creds may be skipped.");
+        }
+        for (DiscoverySnapshot app : apps) {
+            String appId = app.getSourceId();
+            if (appId == null) continue;
+            List<Map<String, String>> keys = wso2BundleClient.fetchApplicationOauthKeys(devToken, creds, appId);
+            if (keys.isEmpty()) continue;
+            List<CredentialReader.AppCredential> appCreds = new ArrayList<>();
+            for (Map<String, String> k : keys) {
+                appCreds.add(CredentialReader.AppCredential.builder()
+                        .applicationId(appId).applicationName(app.getSourceName())
+                        .keyType(k.get("keyType")).keyManager(k.get("keyManager"))
+                        .consumerKey(k.get("consumerKey")).keyManagerPublicKeyPem(kmPem)
+                        .build());
+            }
+            out.put(appId, appCreds);
+        }
+        log.info("[credentials] live-fetched OAuth2 keys for {}/{} application(s)", out.size(), apps.size());
+        return out;
     }
 
     private static MigrationReport.Warning warn(String type, DiscoverySnapshot s, String code, String msg) {

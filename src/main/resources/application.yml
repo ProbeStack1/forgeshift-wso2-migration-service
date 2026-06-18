@@ -149,6 +149,15 @@ forgeshift:
       assessment-resource-info-collection: ${ASSESSMENT_RESOURCE_INFO_COLLECTION:wso2_assessment_resource_info}
       exclude-already-migrated: ${DEPENDENCY_EXCLUDE_ALREADY_MIGRATED:true}
 
+    # Recreate Kong consumer credentials from WSO2 application OAuth2 keys so migrated APIs are callable.
+    # live-key-fetch pulls each migrated app's PUBLIC consumer key from the DevPortal + the Key Manager's
+    # RSA public key (/oauth2/jwks) at migration time, so a Kong consumer gets a working jwt/key-auth
+    # credential even when the assessment never captured the keys. The OAuth2 client SECRET is never read.
+    credentials:
+      enabled: ${CREDENTIALS_ENABLED:true}
+      live-key-fetch: ${CREDENTIALS_LIVE_KEY_FETCH:true}
+      dev-portal-scope: ${CREDENTIALS_DEVPORTAL_SCOPE:apim:subscribe apim:app_manage}
+
     # Custom Kong (Lua) plugin generation + upload for WSO2 policies with no built-in Kong
     # equivalent — e.g. the JS fraud-risk-scoring op-policy → the forgeshift-risk-scoring Lua
     # plugin. OFF by default: when off the migration is byte-for-byte the serverless-inline
