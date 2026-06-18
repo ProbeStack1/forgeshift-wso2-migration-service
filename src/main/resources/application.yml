@@ -149,6 +149,20 @@ forgeshift:
       assessment-resource-info-collection: ${ASSESSMENT_RESOURCE_INFO_COLLECTION:wso2_assessment_resource_info}
       exclude-already-migrated: ${DEPENDENCY_EXCLUDE_ALREADY_MIGRATED:true}
 
+    # Custom Kong (Lua) plugin generation + upload for WSO2 policies with no built-in Kong
+    # equivalent — e.g. the JS fraud-risk-scoring op-policy → the forgeshift-risk-scoring Lua
+    # plugin. OFF by default: when off the migration is byte-for-byte the serverless-inline
+    # behaviour and such policies degrade to a "manual review" warning. Turning this on activates
+    # CUSTOM_PLUGIN mode, which is gated further by a LIVE probe that the target Konnect control
+    # plane is Dedicated Cloud (require-dedicated-control-plane) so a serverless CP is never sent a
+    # custom plugin. NO AI is used — deterministic translators handle the known custom policies.
+    # Flip on staging with env CUSTOM_PLUGINS_ENABLED=true (or the relaxed-binding env var
+    # FORGESHIFT_MIGRATION_CUSTOMPLUGINS_ENABLED=true on the current image) + restart.
+    custom-plugins:
+      enabled: ${CUSTOM_PLUGINS_ENABLED:false}
+      require-dedicated-control-plane: ${CUSTOM_PLUGINS_REQUIRE_DEDICATED_CP:true}
+      path: ${CUSTOM_PLUGINS_PATH:/custom-plugins}
+
     # decK bundle delivery — when enabled, migrations produce a kong.yaml bundle
     # (committed to git → pipeline runs `deck gateway apply`) instead of calling
     # the Konnect REST API directly.
