@@ -71,4 +71,31 @@ class KnownCustomMediatorTranslatorTest {
                 + "<property name=\"X-A\" value=\"1\" scope=\"transport\"/></sequence>";
         assertThat(KnownCustomMediatorTranslator.translate("a", "A", "s", seq, "in", TAGS)).isNull();
     }
+
+    private static final String SECURE_GATEWAY_SEQ =
+            "<sequence name=\"secure-gateway\" xmlns=\"http://ws.apache.org/ns/synapse\">"
+                    + "<script language=\"js\"><![CDATA["
+                    + "  var requiredScope = 'bank:access';"
+                    + "  var amountLimit = 100000;"
+                    + "  var hmacSecret = 's3cr3t-bank-key';"
+                    + "  // decode JWT, validate scope, enforce limit, enrich headers, HMAC sign ..."
+                    + "]]></script>"
+                    + "<property name=\"X-Secure-Gateway\" value=\"forgeshift\" scope=\"transport\"/>"
+                    + "</sequence>";
+
+    @Test
+    void secureGatewayScript_mapsToSecureGatewayPlugin_withConfigParsedFromTheScript() {
+        TranslatedMediationPolicy t = KnownCustomMediatorTranslator.translate(
+                "api1", "SecureApi", "secure-gateway", SECURE_GATEWAY_SEQ, "in", TAGS);
+
+        assertThat(t).isNotNull();
+        assertThat(t.getPlugin().getName()).isEqualTo("forgeshift-secure-gateway");
+        assertThat(t.getPlugin().getConfig())
+                .containsEntry("required_scope", "bank:access")
+                .containsEntry("amount_limit", 100000)
+                .containsEntry("hmac_secret", "s3cr3t-bank-key");
+        assertThat(t.getCustomPlugin()).isNotNull();
+        assertThat(validator.validateHandler(t.getCustomPlugin().getHandlerLua(), 51200).violations()).isEmpty();
+        assertThat(validator.validateSchema(t.getCustomPlugin().getSchemaLua(), 51200).violations()).isEmpty();
+    }
 }

@@ -9,6 +9,7 @@ import com.forgeshift.wso2.migration.translator.HmacSignerPluginBuilder;
 import com.forgeshift.wso2.migration.translator.JsonXmlPluginBuilder;
 import com.forgeshift.wso2.migration.translator.JwtClaimHeaderPluginBuilder;
 import com.forgeshift.wso2.migration.translator.RiskScoringPluginBuilder;
+import com.forgeshift.wso2.migration.translator.SecureGatewayPluginBuilder;
 import com.forgeshift.wso2.migration.deck.BundleBuilder;
 import com.forgeshift.wso2.migration.deck.BundleResult;
 import com.forgeshift.wso2.migration.deck.DeckYamlBuilder;
@@ -140,6 +141,8 @@ public class DeckBundleDeployer {
         // handler/schema are fixed assets, the per-policy config travels on the plugin instance.
         serviceAssets.put(RiskScoringPluginBuilder.PLUGIN_NAME, RiskScoringPluginBuilder.asset());
         serviceAssets.put(HmacSignerPluginBuilder.PLUGIN_NAME, HmacSignerPluginBuilder.asset());
+        serviceAssets.put(JsonXmlPluginBuilder.PLUGIN_NAME, JsonXmlPluginBuilder.asset());
+        serviceAssets.put(SecureGatewayPluginBuilder.PLUGIN_NAME, SecureGatewayPluginBuilder.asset());
         serviceAssets.put(JsonXmlPluginBuilder.PLUGIN_NAME, JsonXmlPluginBuilder.asset());
         if (apis != null) {
             for (Map.Entry<String, CustomPluginArtifact> e : serviceAssets.entrySet()) {

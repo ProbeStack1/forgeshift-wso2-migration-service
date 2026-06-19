@@ -43,6 +43,10 @@ public final class KnownCustomMediatorTranslator {
     private KnownCustomMediatorTranslator() {}
 
     private static final Pattern GE_NUMBER = Pattern.compile(">=\\s*(\\d+)");
+    // Secure-gateway policy config, parsed from the script's "var x = '...'" / "var x = N" assignments.
+    private static final Pattern SCOPE_ASSIGN = Pattern.compile("requiredScope\\s*=\\s*['\"]([^'\"]+)['\"]");
+    private static final Pattern SECRET_ASSIGN = Pattern.compile("hmacSecret\\s*=\\s*['\"]([^'\"]+)['\"]");
+    private static final Pattern LIMIT_ASSIGN = Pattern.compile("amountLimit\\s*=\\s*(\\d+)");
 
     public static TranslatedMediationPolicy translate(String apiId, String apiName, String sequenceName,
                                                       String synapseXml, String flow, List<String> tags) {
@@ -59,6 +63,9 @@ public final class KnownCustomMediatorTranslator {
         // and a sibling <property name="X-Risk-Level" .../> stamps it. Detect the header anywhere in the
         // sequence so both shapes are recognised, not just the inline-in-script one.
         boolean stampsRiskLevel = synapseXml.toLowerCase().contains("x-risk-level");
+        // A secure-gateway composite policy stamps an X-Secure-Gateway marker header anywhere in the
+        // sequence (scope validation + amount limit + header enrichment + HMAC signing, all in one).
+        boolean stampsSecureGateway = synapseXml.toLowerCase().contains("x-secure-gateway");
 
         NodeList children = seq.getChildNodes();
         for (int i = 0; i < children.getLength(); i++) {
@@ -80,6 +87,16 @@ public final class KnownCustomMediatorTranslator {
             } else if (local.equals("script")) {
                 String body = el.getTextContent() == null ? "" : el.getTextContent();
                 String lower = body.toLowerCase();
+                // Secure-gateway composite policy (checked first — its marker is specific): parse the
+                // required scope, amount limit, and HMAC secret out of the script into the plugin config.
+                if (stampsSecureGateway || lower.contains("x-secure-gateway")) {
+                    Map<String, Object> cfg = SecureGatewayPluginBuilder.buildConfig(
+                            firstGroup(SCOPE_ASSIGN, body), firstNumber(LIMIT_ASSIGN, body),
+                            firstGroup(SECRET_ASSIGN, body));
+                    return known(apiId, apiName, sequenceName, flow, tags,
+                            SecureGatewayPluginBuilder.PLUGIN_NAME, cfg, SecureGatewayPluginBuilder.asset(),
+                            "custom JavaScript secure-gateway policy (scope check + amount limit + HMAC + enrichment)");
+                }
                 // inline X-Risk-Level set in the script, OR a risk-computing script paired with a
                 // sequence-level X-Risk-Level stamp (the production op-policy shape).
                 boolean isRiskScript = lower.contains("x-risk-level")
@@ -128,6 +145,25 @@ public final class KnownCustomMediatorTranslator {
             }
         }
         return out;
+    }
+
+    /** First capture group of {@code p} in {@code s}, or null when it doesn't match. */
+    private static String firstGroup(Pattern p, String s) {
+        Matcher m = p.matcher(s);
+        return m.find() ? m.group(1) : null;
+    }
+
+    /** First capture group of {@code p} parsed as an int, or null when absent/unparseable. */
+    private static Integer firstNumber(Pattern p, String s) {
+        Matcher m = p.matcher(s);
+        if (m.find()) {
+            try {
+                return Integer.parseInt(m.group(1));
+            } catch (NumberFormatException ignore) {
+                // skip
+            }
+        }
+        return null;
     }
 
     /** Parse the {@code amount >= N} thresholds → [medium, high, block] (ascending); null if fewer than 3. */
