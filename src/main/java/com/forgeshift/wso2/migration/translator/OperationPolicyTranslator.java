@@ -75,7 +75,7 @@ public final class OperationPolicyTranslator {
 
         List<String> unsupported = new ArrayList<>();
         List<String> customMapped = new ArrayList<>();
-        List<Map<String, Object>> customCandidates = new ArrayList<>();
+        List<Candidate> customCandidates = new ArrayList<>();
         Map<String, Object> reqCfg = new LinkedHashMap<>();
         applyTo(request, reqCfg, true, unsupported, customMapped, customCandidates);
         if (!reqCfg.isEmpty()) result.getPlugins().add(plugin("request-transformer", reqCfg, tags));
@@ -84,19 +84,29 @@ public final class OperationPolicyTranslator {
         applyTo(response, respCfg, false, unsupported, customMapped, customCandidates);
         if (!respCfg.isEmpty()) result.getPlugins().add(plugin("response-transformer", respCfg, tags));
 
-        // Custom (non-header) operation policies. In CUSTOM_PLUGIN mode, try the deterministic
-        // custom-mediator catalog against each policy's fetched Synapse body (opPolicyDefs, keyed by
-        // policyId/policyName). A recognised policy → its pre-built Kong plugin instance (the
-        // handler/schema asset is uploaded by name in DeckBundleDeployer); the rest stay manual-review.
+        // Custom (non-header) operation policies. In CUSTOM_PLUGIN mode each candidate is matched, in
+        // order, against (a) the built-in-with-plugin catalog by NAME (e.g. jsonToXML/xmlToJson → the
+        // forgeshift-json-xml Lua plugin — no Synapse body needed), then (b) the custom-mediator catalog
+        // by Synapse body (opPolicyDefs). A recognised policy → its pre-built Kong plugin instance (asset
+        // uploaded by name in DeckBundleDeployer); the rest stay a manual-review warning.
         String apiId = str(apiPayload.get("id"));
         if (apiId == null) apiId = apiName;
         List<String> migratedToPlugin = new ArrayList<>();
-        for (Map<String, Object> pol : customCandidates) {
+        for (Candidate cand : customCandidates) {
+            Map<String, Object> pol = cand.pol();
             String name = str(pol.get("policyName"));
+            String flow = cand.requestFlow() ? "request" : "response";
+            KongPlugin builtin = mode == TargetMode.CUSTOM_PLUGIN
+                    ? builtinPluginFor(name, flow, tags) : null;
+            if (builtin != null) {
+                result.getPlugins().add(builtin);
+                migratedToPlugin.add(name);
+                continue;
+            }
             String synapse = mode == TargetMode.CUSTOM_PLUGIN ? lookupDef(opPolicyDefs, pol) : null;
             TranslatedMediationPolicy cat = (synapse == null || synapse.isBlank()) ? null
                     : KnownCustomMediatorTranslator.translate(apiId, apiName,
-                            name == null ? "op-policy" : name, wrapSequence(synapse), "request", tags);
+                            name == null ? "op-policy" : name, wrapSequence(synapse), flow, tags);
             if (cat != null && cat.getPlugin() != null) {
                 result.getPlugins().add(cat.getPlugin());
                 migratedToPlugin.add(name == null ? "custom-policy" : name);
@@ -153,7 +163,7 @@ public final class OperationPolicyTranslator {
     @SuppressWarnings("unchecked")
     private static void applyTo(List<Map<String, Object>> policies, Map<String, Object> cfg, boolean requestFlow,
                                 List<String> unsupported, List<String> customMapped,
-                                List<Map<String, Object>> customCandidates) {
+                                List<Candidate> customCandidates) {
         for (Map<String, Object> pol : policies) {
             String name = str(pol.get("policyName"));
             Map<String, Object> params = pol.get("parameters") instanceof Map<?, ?> pm
@@ -210,9 +220,9 @@ public final class OperationPolicyTranslator {
                         addToList(cfg, "replace", "headers", hName + ":" + hValue); // WSO2 "set" = overwrite-or-add
                         customMapped.add(has(name) ? name : "custom-policy");
                     } else {
-                        // Not a header policy. In CUSTOM_PLUGIN mode the caller tries the custom-mediator
-                        // catalog against its Synapse body; otherwise it becomes a manual-review warning.
-                        customCandidates.add(pol);
+                        // Not a header policy. The caller tries the built-in-plugin catalog (by name) then
+                        // the custom-mediator catalog (by Synapse body); otherwise a manual-review warning.
+                        customCandidates.add(new Candidate(pol, requestFlow));
                     }
                 }
             }
@@ -254,6 +264,26 @@ public final class OperationPolicyTranslator {
 
     private static String str(Object o) {
         return o == null ? null : o.toString();
+    }
+
+    /** A non-header operation policy awaiting custom-plugin translation, with the flow it was attached to. */
+    private record Candidate(Map<String, Object> pol, boolean requestFlow) {}
+
+    /**
+     * Built-in WSO2 policies that have a pre-built Kong custom plugin (matched by NAME, no Synapse body
+     * needed): {@code jsonToXML} / {@code xmlToJson} → the {@code forgeshift-json-xml} Lua plugin with the
+     * matching direction + flow. Returns null when the policy isn't one of these.
+     */
+    private static KongPlugin builtinPluginFor(String policyName, String flow, List<String> tags) {
+        String n = policyName == null ? "" : policyName.trim().toLowerCase();
+        String direction = switch (n) {
+            case "jsontoxml" -> "json_to_xml";
+            case "xmltojson" -> "xml_to_json";
+            default -> null;
+        };
+        if (direction == null) return null;
+        return plugin(JsonXmlPluginBuilder.PLUGIN_NAME,
+                JsonXmlPluginBuilder.buildConfig(direction, flow), tags);
     }
 
     /** The fetched Synapse body for a policy entry, looked up by policyId first, then policyName. */

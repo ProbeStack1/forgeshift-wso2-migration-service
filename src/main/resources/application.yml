@@ -198,6 +198,12 @@ forgeshift:
       # root by an earlier run/layout, which would otherwise duplicate an entity and fail decK
       # validate ("entity already exists"). Only non-current, non-create-only YAML is removed.
       reconcile-env-root: ${DECK_RECONCILE_ENV_ROOT:true}
+      # When the env-root reconcile runs, also descend into per-API subdirs (kong/<env>/<slug>/) so
+      # leftovers from an EARLIER single-API migration are cleared too — `deck apply` reads kong/<env>
+      # recursively, so an old kong/<env>/<old-api>/*.yaml would otherwise re-create an API you removed
+      # from the control plane. A multi-API run is then authoritative for the whole env tree; use a
+      # single-API (per-api-dir) migration for true incremental changes.
+      reconcile-recursive: ${DECK_RECONCILE_RECURSIVE:true}
       konnect-secret-name: ${DECK_KONNECT_SECRET_NAME:KONNECT_TOKEN}
       # TEST-ONLY: when true, the service sets a PLAINTEXT Actions variable named
       # {konnect-secret-name} on the repo (no libsodium needed) and the generated workflow
@@ -229,3 +235,9 @@ forgeshift:
         author-name: ${DECK_GIT_AUTHOR_NAME:forgeshift-wso2-migrator}
         author-email: ${DECK_GIT_AUTHOR_EMAIL:migrator@forgeshift.local}
         commit-message-template: ${DECK_GIT_COMMIT_MSG:[wso2-migration] job {jobId} ({company}/{tenant})}
+        # Reconcile stale, no-longer-generated files by MOVING them under archive-dir (kept for
+        # audit/rollback) instead of deleting. They leave the deck apply path either way, so an API
+        # removed from the control plane is not re-created on the next run. archive-dir MUST be outside
+        # the kong/<env> path the pipeline applies (default 'archive' at the repo root).
+        archive-stale: ${DECK_GIT_ARCHIVE_STALE:true}
+        archive-dir: ${DECK_GIT_ARCHIVE_DIR:archive}

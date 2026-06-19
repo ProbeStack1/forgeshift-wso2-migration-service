@@ -1,5 +1,6 @@
 package com.forgeshift.wso2.migration.translator;
 
+import com.forgeshift.wso2.migration.ai.LuaSandboxValidator;
 import com.forgeshift.wso2.migration.ai.TargetMode;
 import com.forgeshift.wso2.migration.domain.kong.KongPlugin;
 import org.junit.jupiter.api.Test;
@@ -169,6 +170,48 @@ class OperationPolicyTranslatorTest {
 
         assertThat(named(r, "forgeshift-risk-scoring")).isNull();
         assertThat(r.getWarnings()).anyMatch(w -> w.contains("manual review") && w.contains("fraudRiskScoring"));
+    }
+
+    @Test
+    void jsonToXmlOpPolicy_inCustomPluginMode_mapsToJsonXmlLuaPlugin() {
+        Map<String, Object> api = Map.of("id", "x", "apiPolicies", Map.of("request", List.of(
+                customPolicy("jsonToXML", "jx-1"))));
+
+        OperationPolicyTranslator.Result r = OperationPolicyTranslator.translate(
+                api, "PartialMapApi", List.of("t"), TargetMode.CUSTOM_PLUGIN, Map.of());
+
+        KongPlugin p = named(r, "forgeshift-json-xml");
+        assertThat(p).as("jsonToXML → forgeshift-json-xml plugin").isNotNull();
+        assertThat(p.getConfig()).containsEntry("direction", "json_to_xml").containsEntry("flow", "request");
+        assertThat(r.getWarnings()).noneMatch(w -> w.contains("manual review") && w.contains("jsonToXML"));
+        // the generated Lua asset is valid for a Dedicated Cloud custom plugin
+        LuaSandboxValidator v = new LuaSandboxValidator();
+        assertThat(v.validateHandler(JsonXmlPluginBuilder.asset().getHandlerLua(), 51200).violations()).isEmpty();
+        assertThat(v.validateSchema(JsonXmlPluginBuilder.asset().getSchemaLua(), 51200).violations()).isEmpty();
+    }
+
+    @Test
+    void xmlToJsonOpPolicy_onResponseFlow_mapsToJsonXmlPlugin_xmlToJsonResponse() {
+        Map<String, Object> api = Map.of("id", "x", "apiPolicies", Map.of("response", List.of(
+                customPolicy("xmlToJson", "xj-1"))));
+
+        OperationPolicyTranslator.Result r = OperationPolicyTranslator.translate(
+                api, "PartialMapApi", List.of("t"), TargetMode.CUSTOM_PLUGIN, Map.of());
+
+        KongPlugin p = named(r, "forgeshift-json-xml");
+        assertThat(p).isNotNull();
+        assertThat(p.getConfig()).containsEntry("direction", "xml_to_json").containsEntry("flow", "response");
+    }
+
+    @Test
+    void jsonToXmlOpPolicy_inServerlessMode_staysManualReview() {
+        Map<String, Object> api = Map.of("id", "x", "apiPolicies", Map.of("request", List.of(
+                customPolicy("jsonToXML", "jx-1"))));
+
+        OperationPolicyTranslator.Result r = OperationPolicyTranslator.translate(api, "PartialMapApi", List.of("t"));
+
+        assertThat(named(r, "forgeshift-json-xml")).isNull();
+        assertThat(r.getWarnings()).anyMatch(w -> w.contains("manual review") && w.contains("jsonToXML"));
     }
 
     @Test

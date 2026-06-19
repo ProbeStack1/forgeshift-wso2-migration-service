@@ -192,26 +192,30 @@ public class GitPublisher {
                 }
             }
 
-            // Remove files left in THIS API's directory by a previous bundle but no longer generated
-            // (e.g. api-products.yaml once product routes became nested). The pipeline applies the whole
-            // per-API directory, so a stale file would re-introduce entities the current bundle dropped
-            // and collide ("entity already exists"). Only per-API subdirs are reconciled — never the
-            // shared kong/<env> root — so other APIs' files are untouched.
+            // Reconcile files left by a previous bundle but no longer generated, so the pipeline applies
+            // ONLY the current bundle. "Reconcile" = archive into deck.git.archive-dir (default) or
+            // hard-delete (archive-stale=false). Either way the file leaves the apply path, so an entity
+            // the current bundle dropped (or an API you removed from the control plane) is not re-created
+            // by `deck gateway apply` (which reads the whole kong/<env> dir and never deletes).
             int removed = 0;
-            // Per-API subdirs (single-API layout): remove any non-current file in the API's own dir.
+            // Per-API subdirs (single-API layout): reconcile any non-current file in the API's own dir.
             if (props.getDeck().isPerApiDir()) {
                 removed += reconcileDirs(perApiDirs(files.keySet()), gh, owner, repoName, branch,
-                        files.keySet(), createOnlyPaths, false, message, cfg);
+                        files.keySet(), createOnlyPaths, false, false, message, cfg);
             }
-            // Flat env root (multi-API layout): remove stale migrator-generated YAML left at kong/<env>
-            // by an earlier run/layout (old combined kong.yaml, differently-named per-API file) that
-            // would duplicate an entity and fail decK validate. YAML-only, non-current, non-create-only.
+            // Flat env root (multi-API layout): reconcile stale migrator-generated YAML under kong/<env>.
+            // With reconcile-recursive (default) this also descends into per-API subdirs, so leftovers
+            // from an EARLIER single-API migration (kong/<env>/<old-slug>/*.yaml) — which `deck apply`
+            // reads recursively and would otherwise re-create — are cleared too. YAML-only, non-current,
+            // non-create-only; the workflow/README and other non-YAML files are never touched.
             if (props.getDeck().isReconcileEnvRoot()) {
                 removed += reconcileDirs(envRootDirs(files.keySet()), gh, owner, repoName, branch,
-                        files.keySet(), createOnlyPaths, true, message, cfg);
+                        files.keySet(), createOnlyPaths, true, props.getDeck().isReconcileRecursive(),
+                        message, cfg);
             }
             if (removed > 0) {
-                log.info("Removed {} stale bundle file(s) so the pipeline applies only the current bundle.", removed);
+                log.info("Reconciled {} stale bundle file(s) ({}) so the pipeline applies only the current bundle.",
+                        removed, cfg.isArchiveStale() ? "archived" : "deleted");
             }
 
             // Trigger the pipeline EXPLICITLY (workflow_dispatch) so it picks up THIS migration's
@@ -382,32 +386,103 @@ public class GitPublisher {
     }
 
     /**
-     * Deletes files in {@code dirs} that are NOT part of the current bundle (and aren't create-only),
-     * returning the count removed. {@code yamlOnly} restricts deletion to {@code .yaml/.yml} (used for
+     * Reconciles files in {@code dirs} that are NOT part of the current bundle (and aren't create-only),
+     * returning the count reconciled. Each stale file is either ARCHIVED into {@code cfg.archiveDir}
+     * (default — moved out of the apply path but kept for audit/rollback) or hard-DELETED
+     * ({@code archive-stale=false}). {@code yamlOnly} restricts action to {@code .yaml/.yml} (used for
      * the shared env root so README/workflow/non-YAML are never touched); per-API subdirs pass false
-     * since the whole subdir belongs to that one API.
+     * since the whole subdir belongs to that one API. When {@code recursive} is true the walk descends
+     * into subdirectories (used by the env-root pass so an earlier single-API migration's
+     * {@code kong/<env>/<slug>/} leftovers — which {@code deck apply} reads recursively — are cleared).
      */
     private int reconcileDirs(Set<String> dirs, WebClient gh, String owner, String repo, String branch,
                               Set<String> keep, Set<String> createOnlyPaths, boolean yamlOnly,
-                              String message, MigrationProperties.Deck.Git cfg) {
+                              boolean recursive, String message, MigrationProperties.Deck.Git cfg) {
         int removed = 0;
         for (String dir : dirs) {
-            for (Map<String, Object> item : listDir(gh, owner, repo, dir, branch)) {
-                if (!"file".equals(str(item.get("type")))) continue;
-                String p = str(item.get("path"));
-                if (p == null || keep.contains(p)) continue;                       // current bundle file
-                if (createOnlyPaths != null && createOnlyPaths.contains(p)) continue;
-                if (yamlOnly && !(p.endsWith(".yaml") || p.endsWith(".yml"))) continue; // protect README/workflow/non-YAML
-                try {
-                    deleteFile(gh, owner, repo, p, branch, str(item.get("sha")), message, cfg);
+            removed += reconcileDir(dir, gh, owner, repo, branch, keep, createOnlyPaths, yamlOnly,
+                    recursive, message, cfg);
+        }
+        return removed;
+    }
+
+    private int reconcileDir(String dir, WebClient gh, String owner, String repo, String branch,
+                             Set<String> keep, Set<String> createOnlyPaths, boolean yamlOnly,
+                             boolean recursive, String message, MigrationProperties.Deck.Git cfg) {
+        int removed = 0;
+        String archiveDir = cfg.getArchiveDir();
+        boolean archive = cfg.isArchiveStale() && StringUtils.hasText(archiveDir);
+        for (Map<String, Object> item : listDir(gh, owner, repo, dir, branch)) {
+            String type = str(item.get("type"));
+            String p = str(item.get("path"));
+            if (p == null) continue;
+            if ("dir".equals(type)) {
+                // Descend into per-API subdirs for the env-root authoritative pass. NEVER walk into the
+                // archive tree, or we'd re-archive already-archived files on every run.
+                if (recursive && !isUnderArchive(p, archiveDir)) {
+                    removed += reconcileDir(p, gh, owner, repo, branch, keep, createOnlyPaths, yamlOnly,
+                            true, message, cfg);
+                }
+                continue;
+            }
+            if (!"file".equals(type)) continue;
+            if (keep.contains(p)) continue;                                       // current bundle file
+            if (createOnlyPaths != null && createOnlyPaths.contains(p)) continue;
+            if (yamlOnly && !(p.endsWith(".yaml") || p.endsWith(".yml"))) continue; // protect README/workflow/non-YAML
+            try {
+                String sha = str(item.get("sha"));
+                if (archive) {
+                    if (archiveFile(gh, owner, repo, p, branch, sha, archiveDir, message, cfg)) {
+                        removed++;
+                        log.info("Archived stale bundle file {} -> {}/ (no longer generated)", p, archiveDir);
+                    }
+                } else {
+                    deleteFile(gh, owner, repo, p, branch, sha, message, cfg);
                     removed++;
                     log.info("Deleted stale bundle file {} (no longer generated)", p);
-                } catch (Exception ex) {
-                    log.warn("Could not delete stale bundle file {}: {}", p, ex.getMessage());
                 }
+            } catch (Exception ex) {
+                log.warn("Could not reconcile stale bundle file {}: {}", p, ex.getMessage());
             }
         }
         return removed;
+    }
+
+    /**
+     * Moves a stale file out of the apply path by re-creating it under {@code archiveDir} (original
+     * sub-path preserved) and deleting the original. GitHub has no native move, so this is a
+     * copy-then-delete: read content → PUT {@code <archiveDir>/<path>} → DELETE {@code <path>}.
+     * Returns {@code false} (leaving the file untouched) when its content can't be read, so we never
+     * delete data we couldn't first preserve.
+     */
+    private boolean archiveFile(WebClient gh, String owner, String repo, String path, String branch,
+                                String sha, String archiveDir, String message,
+                                MigrationProperties.Deck.Git cfg) {
+        Existing src = getExisting(gh, owner, repo, path, branch);
+        if (src == null || src.content() == null) {
+            log.warn("Skipping archive of {} — content unavailable; left in place (not deleted)", path);
+            return false;
+        }
+        String dest = archivePathFor(archiveDir, path);
+        String destSha = getSha(gh, owner, repo, dest, branch);   // overwrite any prior archived copy
+        putFile(gh, owner, repo, dest, branch, src.content(), destSha,
+                "chore(deck): archive stale " + path + " -> " + dest + " — " + message, cfg);
+        deleteFile(gh, owner, repo, path, branch, sha, message, cfg);
+        return true;
+    }
+
+    /** Repo path a stale file is archived to: {@code <archiveDir>/<original path>} (structure preserved). */
+    static String archivePathFor(String archiveDir, String path) {
+        return archiveDir + "/" + path;
+    }
+
+    /** True when {@code path} IS the archive dir or sits under it — keeps the recursive reconcile from
+     *  walking into (and endlessly re-archiving) the archive tree. */
+    static boolean isUnderArchive(String path, String archiveDir) {
+        if (!StringUtils.hasText(archiveDir) || path == null) {
+            return false;
+        }
+        return path.equals(archiveDir) || path.startsWith(archiveDir + "/");
     }
 
     /** Per-API kong directories ({@code kong/<env>/<slug>}) among the bundle paths — never {@code kong/<env>}. */

@@ -75,4 +75,32 @@ class GitPublisherTest {
         assertThat(GitPublisher.envRootDirs(bundle)).isEmpty();
         assertThat(GitPublisher.perApiDirs(bundle)).containsExactly("kong/dev/petstore-2-0");
     }
+
+    /**
+     * A stale file is archived under archive-dir with its ORIGINAL repo path preserved beneath it, so
+     * the archived copy lands OUTSIDE the kong/<env> apply path (decK never reads it) yet remains
+     * traceable to where it came from.
+     */
+    @Test
+    void archivePathFor_preservesOriginalPathUnderArchiveDir() {
+        assertThat(GitPublisher.archivePathFor("archive", "kong/dev/api-orders-1-0.yaml"))
+                .isEqualTo("archive/kong/dev/api-orders-1-0.yaml");
+        // The archived path must not start with the kong config dir, or the pipeline would re-apply it.
+        assertThat(GitPublisher.archivePathFor("archive", "kong/dev/old-api/api-old.yaml"))
+                .doesNotStartWith("kong/");
+    }
+
+    /**
+     * The recursive env-root reconcile must skip the archive tree itself — otherwise it would re-archive
+     * already-archived files on every run. Matching is on a path boundary, so "archived/..." is NOT
+     * treated as being under "archive".
+     */
+    @Test
+    void isUnderArchive_detectsArchiveTree_onPathBoundary() {
+        assertThat(GitPublisher.isUnderArchive("archive", "archive")).isTrue();
+        assertThat(GitPublisher.isUnderArchive("archive/kong/dev/api-foo.yaml", "archive")).isTrue();
+        assertThat(GitPublisher.isUnderArchive("kong/dev/api-foo.yaml", "archive")).isFalse();
+        assertThat(GitPublisher.isUnderArchive("archived/x.yaml", "archive")).isFalse();
+        assertThat(GitPublisher.isUnderArchive("kong/dev/api.yaml", "")).isFalse();
+    }
 }

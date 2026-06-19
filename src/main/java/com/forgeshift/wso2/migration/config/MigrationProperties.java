@@ -255,6 +255,17 @@ public class MigrationProperties {
          * omits; use a single-API migration (per-api-dir) for true incremental changes.
          */
         private boolean reconcileEnvRoot = false;
+        /**
+         * When the multi-API env-root reconcile runs, also descend into per-API subdirectories
+         * ({@code kong/<env>/<slug>/}) and reconcile stale files there — not only the files sitting
+         * directly in {@code kong/<env>}. This is what clears files left by an EARLIER single-API
+         * (per-api-dir) migration: {@code deck gateway apply} reads the env dir <b>recursively</b>, so
+         * a leftover {@code kong/<env>/<old-api>/*.yaml} would otherwise re-create an API you deleted
+         * from the control plane on the next pipeline run. Default {@code true}. Note: a multi-API run
+         * is then authoritative for the whole env tree — anything not in the current bundle is
+         * archived/deleted; use a single-API per-api-dir migration for true incremental changes.
+         */
+        private boolean reconcileRecursive = true;
         private String konnectSecretName = "KONNECT_TOKEN";
         /**
          * TEST-ONLY: deliver the Konnect token to the pipeline as a plaintext GitHub Actions
@@ -289,6 +300,20 @@ public class MigrationProperties {
             private String authorName = "forgeshift-wso2-migrator";
             private String authorEmail = "migrator@forgeshift.local";
             private String commitMessageTemplate = "[wso2-migration] job {jobId} ({company}/{tenant})";
+            /**
+             * Reconcile stale, no-longer-generated bundle files by MOVING them into {@link #archiveDir}
+             * instead of deleting them. They leave the {@code deck gateway apply} path (so an API you
+             * removed from the control plane stops being re-created) but stay in the repo for
+             * audit/rollback. Default {@code true}; set {@code false} to hard-delete instead.
+             */
+            private boolean archiveStale = true;
+            /**
+             * Repo-relative directory stale files are archived under, with their original path preserved
+             * beneath it (e.g. {@code archive/kong/dev/api-foo.yaml}). MUST be OUTSIDE the Kong config
+             * path the pipeline applies (default {@code archive} at the repo root) — otherwise decK would
+             * read it and re-create the very entities you archived.
+             */
+            private String archiveDir = "archive";
         }
     }
 }
