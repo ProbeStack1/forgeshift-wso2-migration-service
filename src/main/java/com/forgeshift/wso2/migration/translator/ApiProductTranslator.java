@@ -81,11 +81,18 @@ public class ApiProductTranslator {
                 }
                 List<Map<String, Object>> ops = listOfMaps(m.get("operations"));
                 if (ops == null || ops.isEmpty()) {
-                    String path = joinPaths(context, "/" + slug(memberName));
-                    routes.add(route(productSlug + "--" + slug(memberName) + "--all", path,
+                    // No operations captured for this member — fall back to a catch-all at the product
+                    // CONTEXT with strip_path=true, so whatever resource the caller appends is forwarded
+                    // to the member backend (instead of a made-up /<context>/<member> path that strips to
+                    // "/"). With several no-op members this is ambiguous (same prefix) — hence the warning.
+                    warnings.add("API Product '" + productName + "' member '" + memberName + "' has no "
+                            + "operations in the snapshot — routed as a catch-all at the product context '"
+                            + context + "'; verify per-resource routing manually.");
+                    routes.add(route(productSlug + "--" + slug(memberName) + "--all",
+                            ApiTranslator.kongRoutePath(context),
                             List.of("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"),
                             tagsWith(baseTags, "wso2-member-api:" + memberId), memberId,
-                            copies(productPlugins)));
+                            copies(productPlugins), true));
                     continue;
                 }
                 for (Map<String, Object> op : ops) {
@@ -93,7 +100,8 @@ public class ApiProductTranslator {
                     String target = str(op.get("target"));
                     if (!StringUtils.hasText(verb) || !StringUtils.hasText(target)) continue;
                     String tier = str(op.get("throttlingPolicy"));
-                    // Kong 3.x: templated paths (/items/{id}) must become ~/ regex paths.
+                    // Match the product context + member resource (Kong 3.x: templated paths /items/{id}
+                    // become ~/ regex paths) so the right member API + verb is selected.
                     String path = ApiTranslator.kongRoutePath(joinPaths(context, normalize(target)));
 
                     List<KongPlugin> routePlugins = copies(productPlugins);
@@ -102,12 +110,21 @@ public class ApiProductTranslator {
                         if (rpm == null) rpm = props.getTranslation().getDefaultThrottleRpm();
                         routePlugins.add(rateLimit(rpm, tagsWith(baseTags, "wso2-tier:" + tier)));
                     }
+                    // A product has NO single service, so this route nests under the MEMBER API's service.
+                    // WSO2 strips the product context and forwards only the member resource (e.g.
+                    // /retail-banking/accounts/42 -> accounts backend /accounts/42). Kong's strip_path
+                    // strips the WHOLE matched path (context + resource) -> it would forward "/" to the
+                    // member backend, which bare-host backends answer with a 200 + HTML landing page. So
+                    // keep strip_path=FALSE and rewrite the upstream URI to the member resource via a
+                    // request-transformer, mapping path params to the route's named captures
+                    // (/anything/{id} -> /anything/$(uri_captures.id)).
+                    setUpstreamResourceUri(routePlugins, target, baseTags);
                     routes.add(route(
                             productSlug + "--" + slug(memberName) + "--" + verb.toLowerCase() + slug(target),
                             path, List.of(verb),
                             tagsWith(baseTags, "wso2-member-api:" + memberId,
                                     "wso2-resource:" + target, "wso2-verb:" + verb),
-                            memberId, routePlugins));
+                            memberId, routePlugins, false));
                 }
             }
         }
@@ -220,13 +237,14 @@ public class ApiProductTranslator {
     }
 
     private TranslatedApiProduct.ProductRoute route(String name, String path, List<String> methods,
-                                                    List<String> tags, String memberId, List<KongPlugin> plugins) {
+                                                    List<String> tags, String memberId,
+                                                    List<KongPlugin> plugins, boolean stripPath) {
         KongRoute r = KongRoute.builder()
                 .name(name)
                 .protocols(DEFAULT_PROTOCOLS)
                 .methods(methods)
                 .paths(List.of(path))
-                .strip_path(true)
+                .strip_path(stripPath)
                 .tags(tags)
                 .build();
         return TranslatedApiProduct.ProductRoute.builder()
@@ -234,6 +252,68 @@ public class ApiProductTranslator {
                 .memberApiId(memberId)
                 .plugins(plugins)
                 .build();
+    }
+
+    /**
+     * Ensure a product route forwards the MEMBER RESOURCE (not the product context) to the member
+     * backend. The route uses {@code strip_path=false} (Kong would otherwise strip the whole matched
+     * context+resource and forward "/"), so a {@code request-transformer} rewrites the upstream URI to
+     * the resource, mapping any path params to the route's named captures. If the route already carries
+     * a {@code request-transformer} (e.g. from a product-level operation policy) the {@code replace.uri}
+     * is merged into it rather than adding a colliding second instance of the plugin.
+     */
+    @SuppressWarnings("unchecked")
+    private static void setUpstreamResourceUri(List<KongPlugin> plugins, String target, List<String> tags) {
+        String uri = productUpstreamUri(target);
+        for (KongPlugin pl : plugins) {
+            if ("request-transformer".equals(pl.getName())) {
+                Map<String, Object> cfg = pl.getConfig() == null
+                        ? new LinkedHashMap<>() : new LinkedHashMap<>(pl.getConfig());
+                Object existing = cfg.get("replace");
+                Map<String, Object> replace = existing instanceof Map
+                        ? new LinkedHashMap<>((Map<String, Object>) existing) : new LinkedHashMap<>();
+                replace.put("uri", uri);
+                cfg.put("replace", replace);
+                pl.setConfig(cfg);
+                return;
+            }
+        }
+        Map<String, Object> replace = new LinkedHashMap<>();
+        replace.put("uri", uri);
+        Map<String, Object> cfg = new LinkedHashMap<>();
+        cfg.put("replace", replace);
+        plugins.add(plugin("request-transformer", cfg, tags));
+    }
+
+    /**
+     * Build the {@code request-transformer} {@code replace.uri} that reconstructs a member resource path
+     * from a product route: a static target is returned as-is ({@code /get}); path params map to the same
+     * named captures {@link ApiTranslator#kongRoutePath} emits ({@code /anything/{id}} →
+     * {@code /anything/$(uri_captures.id)}).
+     */
+    static String productUpstreamUri(String target) {
+        String t = StringUtils.hasText(target) ? (target.startsWith("/") ? target : "/" + target) : "/";
+        if (!t.contains("{")) {
+            return t;
+        }
+        StringBuilder out = new StringBuilder();
+        int i = 0;
+        while (i < t.length()) {
+            char ch = t.charAt(i);
+            if (ch == '{') {
+                int end = t.indexOf('}', i + 1);
+                if (end > i + 1) {
+                    out.append("$(uri_captures.")
+                            .append(ApiTranslator.captureName(t.substring(i + 1, end)))
+                            .append(")");
+                    i = end + 1;
+                    continue;
+                }
+            }
+            out.append(ch);
+            i++;
+        }
+        return out.toString();
     }
 
     // ---------------- helpers ----------------

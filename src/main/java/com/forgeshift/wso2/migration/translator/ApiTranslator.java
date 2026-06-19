@@ -177,16 +177,19 @@ public class ApiTranslator {
                 .upstream(upstream)
                 .targets(targets);
 
-        // --- Route: ONE per API at the WSO2 context --------------------------
+        // --- Route: ONE per API at the WSO2 context + version ----------------
         // WSO2 forwards <gateway>/<context>/<version>/<resource> to <backend>/<resource>:
-        // it strips the context (+version) and keeps the resource path. The faithful Kong
-        // equivalent is a SINGLE route at the context with strip_path=true — Kong strips
-        // only the matched context prefix, so the resource path AND any path params
-        // (e.g. /items/{id}) flow through to the backend unchanged.
+        // it strips BOTH the context AND the version segment, keeping only the resource path
+        // (verified against captured gateway URLs, e.g. /seed01/1.0.0/get -> backend /get).
+        // The faithful Kong equivalent is a SINGLE route whose matched path is the context
+        // FOLLOWED BY the version (see contextRoutePath) with strip_path=true — Kong then strips
+        // /<context>/<version> and forwards only the resource (and any path params such as
+        // /items/{id}) to the backend, exactly like WSO2.
         //
-        // The previous per-resource routes used paths=[context+resource] with
-        // strip_path=true, which stripped the resource too and forwarded "/" to the
-        // backend (every call hit the upstream root instead of the real resource).
+        // A route at the BARE context (paths=[context], strip_path=true) was the bug: a real
+        // /<context>/<version>/<resource> call leaked the surplus /<version> to the backend, and
+        // a bare-context hit collapsed to the backend root "/", which bare-host backends answer
+        // with a 200 + HTML landing page instead of the API JSON (the reported symptom).
         List<KongRoute> routes = new ArrayList<>();
         Map<String, List<KongPlugin>> routePlugins = new HashMap<>();
         List<Map<String, Object>> ops = listOfMaps(p.get("operations"));
@@ -229,7 +232,7 @@ public class ApiTranslator {
                 .name(routeName)
                 .protocols(protocols)
                 .methods(new ArrayList<>(methods))
-                .paths(List.of(kongRoutePath(context)))
+                .paths(List.of(contextRoutePath(context, apiVersion)))
                 .strip_path(true)
                 .service(Map.of("name", safeName))
                 .tags(tagsWith(tags, resourceTags.toArray(new String[0])))
@@ -563,6 +566,51 @@ public class ApiTranslator {
         return uriTemplate.startsWith("/") ? uriTemplate : "/" + uriTemplate;
     }
 
+    /** WSO2 templated-version token that can appear in a context, e.g. {@code /bank/customers/{version}}. */
+    private static final java.util.regex.Pattern VERSION_TOKEN =
+            java.util.regex.Pattern.compile("\\{version\\}", java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Build the SINGLE Kong route path for an API from its WSO2 {@code context} and {@code version}.
+     *
+     * <p>WSO2 exposes every API at {@code /<context>/<version>/<resource>} and strips BOTH the context
+     * AND the version before forwarding only {@code /<resource>} to the backend (verified against
+     * captured gateway URLs, e.g. {@code /seed01/1.0.0/get} → backend {@code /get}). The route path must
+     * therefore be {@code /<context>/<version>} so that {@code strip_path=true} removes exactly those two
+     * segments and the resource (plus any path params like {@code /items/{id}}) flows through unchanged.
+     *
+     * <p>Version placement mirrors WSO2: a literal {@code {version}} token in the context (some configs
+     * put it there, e.g. {@code /bank/customers/{version}}) IS the version slot, so it is substituted and
+     * nothing is appended; otherwise the version is appended after the context. The CONCRETE version is
+     * used (not a wildcard) so the path is a plain prefix — distinct per version, so two published
+     * versions of the same context never shadow each other, and a wrong-version call doesn't match (as on
+     * WSO2). When the version is unknown the bare context is returned (degrades to the old behaviour).
+     */
+    static String contextRoutePath(String context, String version) {
+        String ctx = StringUtils.hasText(context) ? context.trim() : "/";
+        if (!ctx.startsWith("/")) {
+            ctx = "/" + ctx;
+        }
+        String ver = StringUtils.hasText(version) ? version.trim() : "";
+
+        String path;
+        if (VERSION_TOKEN.matcher(ctx).find()) {
+            // WSO2 substitutes the version where the {version} token sits — don't also append it.
+            path = VERSION_TOKEN.matcher(ctx).replaceAll(java.util.regex.Matcher.quoteReplacement(ver));
+        } else if (!ver.isEmpty()) {
+            // Default WSO2 versioning appends the version segment after the context.
+            path = ctx.endsWith("/") ? ctx + ver : ctx + "/" + ver;
+        } else {
+            path = ctx;   // version unknown → fall back to the bare context
+        }
+        // Normalise: collapse duplicate slashes and drop a trailing slash (except the root).
+        path = path.replaceAll("/{2,}", "/");
+        if (path.length() > 1 && path.endsWith("/")) {
+            path = path.substring(0, path.length() - 1);
+        }
+        return path;
+    }
+
     /**
      * Kong Gateway 3.x route paths do not accept WSO2/OpenAPI template segments
      * like {@code /items/{id}} as plain paths. Convert templated paths to regex
@@ -583,12 +631,7 @@ public class ApiTranslator {
             if (ch == '{') {
                 int end = path.indexOf('}', i + 1);
                 if (end > i + 1) {
-                    String rawName = path.substring(i + 1, end);
-                    String name = rawName.replaceAll("[^A-Za-z0-9_]", "_");
-                    if (name.isBlank() || Character.isDigit(name.charAt(0))) {
-                        name = "param_" + name;
-                    }
-                    out.append("(?<").append(name).append(">[^/]+)");
+                    out.append("(?<").append(captureName(path.substring(i + 1, end))).append(">[^/]+)");
                     i = end + 1;
                     continue;
                 }
@@ -601,6 +644,20 @@ public class ApiTranslator {
         }
         out.append('$');
         return out.toString();
+    }
+
+    /**
+     * Kong named-capture identifier for a WSO2/OpenAPI {@code {param}} segment: non-word chars are
+     * replaced with {@code _}, and a blank/digit-leading name is prefixed with {@code param_}. Shared
+     * by {@link #kongRoutePath} (which emits {@code (?<name>[^/]+)}) and {@code ApiProductTranslator}
+     * (which references the same name via {@code $(uri_captures.name)}), so the two always agree.
+     */
+    static String captureName(String rawName) {
+        String name = rawName == null ? "" : rawName.replaceAll("[^A-Za-z0-9_]", "_");
+        if (name.isBlank() || Character.isDigit(name.charAt(0))) {
+            name = "param_" + name;
+        }
+        return name;
     }
 
     @SuppressWarnings("unchecked")

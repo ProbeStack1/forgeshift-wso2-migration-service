@@ -38,13 +38,14 @@ class ApiTranslatorTest {
 
         TranslatedApi api = translator.translate(snap);
 
-        // ONE route per API, anchored at the WSO2 context with strip_path=true so Kong
-        // strips only "/users" and forwards "/items" (and "/items/42" for path params)
-        // to the backend — matching WSO2 gateway forwarding. (The old per-resource
-        // routes used paths=[/users/items] + strip_path=true and wrongly forwarded "/".)
+        // ONE route per API at the WSO2 context FOLLOWED BY the version, with strip_path=true so
+        // Kong strips "/users/1.0.0" and forwards "/items" (and "/items/42" for path params) to the
+        // backend — matching WSO2, which strips BOTH the context and the version. (A bare-context
+        // route "/users" forwarded the surplus "/1.0.0/items" or collapsed to backend root "/",
+        // which bare-host backends answer with a 200 + HTML landing page.)
         assertEquals(1, api.getRoutes().size());
         var route = api.getRoutes().get(0);
-        assertEquals(List.of("/users"), route.getPaths());
+        assertEquals(List.of("/users/1.0.0"), route.getPaths());
         assertTrue(route.getStrip_path());
 
         // Only the verbs WSO2 exposes are allowed (de-duplicated).
@@ -62,6 +63,38 @@ class ApiTranslatorTest {
         long distinct = route.getTags().stream().distinct().count();
         assertEquals(route.getTags().size(), distinct, "route tags must be unique (no duplicates)");
         assertEquals(1, route.getTags().stream().filter("wso2-resource:_items"::equals).count());
+    }
+
+    @Test
+    void contextRoutePath_plainContext_appendsConcreteVersionSegment() {
+        // /users + 1.0.0 -> /users/1.0.0 ; strip_path then strips context+version, forwards the resource.
+        assertEquals("/users/1.0.0", ApiTranslator.contextRoutePath("/users", "1.0.0"));
+    }
+
+    @Test
+    void contextRoutePath_literalVersionToken_isSubstituted_notDoubleAppended() {
+        // /bank/customers/{version} : the {version} token IS the version slot — substitute it,
+        // do NOT append a second version segment (that would over-strip the resource).
+        assertEquals("/bank/customers/1.0.0",
+                ApiTranslator.contextRoutePath("/bank/customers/{version}", "1.0.0"));
+    }
+
+    @Test
+    void contextRoutePath_literalVersionLabelContext_stillAppendsApiVersion() {
+        // /open-banking/v3.1 has a version LABEL but no {version} token; WSO2 still appends the
+        // concrete apiVersion in the invocation URL, so the route must include it.
+        assertEquals("/open-banking/v3.1/3.1.0",
+                ApiTranslator.contextRoutePath("/open-banking/v3.1", "3.1.0"));
+    }
+
+    @Test
+    void contextRoutePath_trailingSlash_doesNotDoubleSlashBeforeVersion() {
+        assertEquals("/users/1.0.0", ApiTranslator.contextRoutePath("/users/", "1.0.0"));
+    }
+
+    @Test
+    void contextRoutePath_missingVersion_fallsBackToBareContext() {
+        assertEquals("/users", ApiTranslator.contextRoutePath("/users", null));
     }
 
     private static ApiTranslator translator() {
