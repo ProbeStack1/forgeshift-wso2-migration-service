@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.forgeshift.wso2.migration.ai.TargetMode;
 import com.forgeshift.wso2.migration.bundle.Wso2ApiBundle;
 import com.forgeshift.wso2.migration.config.MigrationProperties;
+import com.forgeshift.wso2.migration.config.MigrationProperties.Deck.RouteGranularity;
 import com.forgeshift.wso2.migration.domain.kong.KongPlugin;
 import com.forgeshift.wso2.migration.domain.kong.KongRoute;
 import com.forgeshift.wso2.migration.domain.kong.KongService;
@@ -227,31 +228,100 @@ public class ApiTranslator {
         if (methods.isEmpty()) {
             methods.addAll(List.of("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"));
         }
-        String routeName = safeName + "--all";
-        KongRoute route = KongRoute.builder()
-                .name(routeName)
-                .protocols(protocols)
-                .methods(new ArrayList<>(methods))
-                .paths(List.of(contextRoutePath(context, apiVersion)))
-                .strip_path(true)
-                .service(Map.of("name", safeName))
-                .tags(tagsWith(tags, resourceTags.toArray(new String[0])))
-                .build();
-        routes.add(route);
-        if (strictestRpm != null) {
-            routePlugins.computeIfAbsent(routeName, k -> new ArrayList<>())
-                    .add(rateLimit(strictestRpm, tagsWith(tags, "wso2-tier:" + strictestTier)));
+        // AM 4.x operation policies (apiPolicies + operations[].operationPolicies) are computed up front
+        // so PER_RESOURCE can MERGE the op-policy request-transformer into each per-resource route's own
+        // request-transformer (Kong runs only the more-specific scope, so a route-scoped request-transformer
+        // would otherwise SHADOW a service-scoped one and silently lose the op-policy header/query/path
+        // transforms). In PREFIX mode both transformers stay service-scoped, exactly as before.
+        OperationPolicyTranslator.Result opPolicies =
+                OperationPolicyTranslator.translate(p, apiName, tags, mode, opPolicyDefs);
+        List<KongPlugin> svcPlugins = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
+        warnings.addAll(opPolicies.getWarnings());
+
+        boolean corsEnabled = mapOf(p.get("corsConfiguration")) != null
+                && Boolean.TRUE.equals(mapOf(p.get("corsConfiguration")).get("corsConfigurationEnabled"));
+        RouteGranularity granularity = props.getDeck().getRouteGranularity();
+        boolean perResourceEmitted = false;
+        if (granularity == RouteGranularity.PER_RESOURCE && ops != null && !ops.isEmpty()) {
+            // The op-policy REQUEST-transformer config (if any) is replicated + merged into every
+            // per-resource route. The RESPONSE-transformer is a different plugin name (not shadowed),
+            // so it stays service-scoped below.
+            Map<String, Object> opReqCfg = requestTransformerConfig(opPolicies.getPlugins());
+            String svcPath = service.getPath();   // backend base path (may be null/"/"), folded into replace.uri
+            for (Map<String, Object> op : ops) {
+                String verb = upper(str(op.get("verb")));
+                String target = str(op.get("target"));
+                if (!StringUtils.hasText(verb) || !StringUtils.hasText(target)) continue;
+                String rPath = kongRoutePath(joinPaths(contextRoutePath(context, apiVersion), normalizeTemplate(target)));
+                List<String> rMethods = corsEnabled ? List.of(verb, "OPTIONS") : List.of(verb);
+                String rName = safeName + "--" + verb.toLowerCase() + slug(target);
+                KongRoute r = KongRoute.builder()
+                        .name(rName)
+                        .protocols(protocols)
+                        .methods(new ArrayList<>(rMethods))
+                        .paths(List.of(rPath))
+                        .strip_path(false)   // path INCLUDES the resource → forward it via replace.uri
+                        .service(Map.of("name", safeName))
+                        .tags(tagsWith(tags, "wso2-resource:" + target, "wso2-verb:" + verb))
+                        .build();
+                routes.add(r);
+                perResourceEmitted = true;
+
+                List<KongPlugin> rPlugins = new ArrayList<>();
+                // Per-op rate-limit (each op's own tier — more faithful than the strictest-collapse).
+                String tier = str(op.get("throttlingPolicy"));
+                if (StringUtils.hasText(tier) && !"Unlimited".equalsIgnoreCase(tier)) {
+                    Integer rpm = tierRpm.get(tier);
+                    if (rpm == null) rpm = props.getTranslation().getDefaultThrottleRpm();
+                    rPlugins.add(rateLimit(rpm, tagsWith(tags, "wso2-tier:" + tier)));
+                }
+                // Forward ONLY the resource: strip_path=false would otherwise send the whole matched
+                // /<ctx>/<ver>/<target> upstream. replace.uri folds in the backend base path so a
+                // non-root backend (service.path) is preserved exactly as PREFIX strip_path=true did.
+                String replaceUri = joinPaths(svcPath, ApiProductTranslator.productUpstreamUri(target));
+                setUpstreamResourceUri(rPlugins, replaceUri, opReqCfg, tags);
+                routePlugins.put(rName, rPlugins);
+            }
+        }
+        if (!perResourceEmitted) {
+            // PREFIX mode, OR PER_RESOURCE with no usable operations → ONE route per API at the WSO2
+            // context + version with strip_path=true (never ship a routeless API).
+            String routeName = safeName + "--all";
+            KongRoute route = KongRoute.builder()
+                    .name(routeName)
+                    .protocols(protocols)
+                    .methods(new ArrayList<>(methods))
+                    .paths(List.of(contextRoutePath(context, apiVersion)))
+                    .strip_path(true)
+                    .service(Map.of("name", safeName))
+                    .tags(tagsWith(tags, resourceTags.toArray(new String[0])))
+                    .build();
+            routes.add(route);
+            if (strictestRpm != null) {
+                routePlugins.computeIfAbsent(routeName, k -> new ArrayList<>())
+                        .add(rateLimit(strictestRpm, tagsWith(tags, "wso2-tier:" + strictestTier)));
+            }
+            // PREFIX: op-policy transforms stay SERVICE-scoped (one route, nothing to shadow).
+            svcPlugins.addAll(opPolicies.getPlugins());
+        } else {
+            // PER_RESOURCE: the request-transformer was merged into each route above; keep only the
+            // response-transformer (and any other non-request-transformer op-policy plugin) service-scoped.
+            for (KongPlugin pl : opPolicies.getPlugins()) {
+                if (!"request-transformer".equals(pl.getName())) svcPlugins.add(pl);
+            }
         }
         out.routes(routes);
         out.routePlugins(routePlugins);
-
-        // --- Service-level plugins -------------------------------------------
-        List<KongPlugin> svcPlugins = new ArrayList<>();
-        List<String> warnings = new ArrayList<>();
         if (!provenance.isEmpty()) {
             warnings.add("API " + apiName + ": " + provenance.size()
                     + " field(s) filled from a fallback source because the export ZIP lacked them — "
                     + provenance + ".");
+        }
+        if (perResourceEmitted) {
+            warnings.add("API " + apiName + ": PER_RESOURCE route mode — one Kong route per WSO2 operation "
+                    + "with per-route rate-limits (per-node counters, NOT an API-wide budget); operation "
+                    + "policy header/query transforms were merged into each route's request-transformer.");
         }
 
         // 1) API-level throttling (policies array)
@@ -345,12 +415,9 @@ public class ApiTranslator {
             svcPlugins.add(KongPlugin.builder().name("proxy-cache").config(cfg).enabled(true).tags(tags).build());
         }
 
-        // 4b) AM 4.x operation policies (apiPolicies + operations[].operationPolicies) → request/
-        // response-transformer for the header/query/path/method built-ins; the rest become warnings.
-        OperationPolicyTranslator.Result opPolicies =
-                OperationPolicyTranslator.translate(p, apiName, tags, mode, opPolicyDefs);
-        svcPlugins.addAll(opPolicies.getPlugins());
-        warnings.addAll(opPolicies.getWarnings());
+        // 4b) AM 4.x operation policies were translated up front (see opPolicies above): in PREFIX
+        // mode added to svcPlugins, in PER_RESOURCE merged into each route's request-transformer; their
+        // warnings are already folded in. Nothing to do here.
 
         // 4c) OAuth2 scope enforcement (Target 1) — only when targeting a custom-plugin-capable CP.
         // WSO2 binds required scopes to operations; today only jwt is emitted, so the scope check is
@@ -463,6 +530,55 @@ public class ApiTranslator {
         cfg.put("fault_tolerant", true);
         cfg.put("hide_client_headers", false);
         return KongPlugin.builder().name("rate-limiting").config(cfg).enabled(true).tags(tags).build();
+    }
+
+    /**
+     * The {@code config} of the op-policy {@code request-transformer} in {@code plugins}, or null when the
+     * op policies produced no request-transformer. Used in PER_RESOURCE mode to replicate the op-policy
+     * request transforms onto every per-resource route (a route-scoped request-transformer would otherwise
+     * SHADOW the service-scoped op-policy one and silently drop its header/query/path transforms).
+     */
+    private static Map<String, Object> requestTransformerConfig(List<KongPlugin> plugins) {
+        if (plugins == null) return null;
+        for (KongPlugin pl : plugins) {
+            if ("request-transformer".equals(pl.getName())) return pl.getConfig();
+        }
+        return null;
+    }
+
+    /**
+     * Add a per-resource route's {@code request-transformer}: start from a COPY of the op-policy request
+     * config {@code baseCfg} (header/query/method transforms — null when there is none), then set
+     * {@code replace.uri = replaceUri} so {@code strip_path=false} still forwards only the resource.
+     * {@code replace.uri} wins over any op-policy {@code rewriteResourcePath} on the same key — correct,
+     * because routing already selected the resource. Mirrors {@link ApiProductTranslator}'s merge so the
+     * two translators stay in lockstep.
+     */
+    @SuppressWarnings("unchecked")
+    private static void setUpstreamResourceUri(List<KongPlugin> plugins, String replaceUri,
+                                               Map<String, Object> baseCfg, List<String> tags) {
+        Map<String, Object> cfg = baseCfg == null ? new LinkedHashMap<>() : deepCopyConfig(baseCfg);
+        Object existing = cfg.get("replace");
+        Map<String, Object> replace = existing instanceof Map
+                ? new LinkedHashMap<>((Map<String, Object>) existing) : new LinkedHashMap<>();
+        replace.put("uri", replaceUri);
+        cfg.put("replace", replace);
+        plugins.add(KongPlugin.builder().name("request-transformer").config(cfg).enabled(true)
+                .tags(tags == null ? null : new ArrayList<>(tags)).build());
+    }
+
+    /** Per-route copy of a request-transformer config (top-level sections re-wrapped so each route gets
+     *  its own mutable maps; the op-policy original is never mutated). */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> deepCopyConfig(Map<String, Object> src) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> e : src.entrySet()) {
+            Object v = e.getValue();
+            if (v instanceof Map<?, ?> m) out.put(e.getKey(), new LinkedHashMap<>((Map<String, Object>) m));
+            else if (v instanceof List<?> l) out.put(e.getKey(), new ArrayList<>(l));
+            else out.put(e.getKey(), v);
+        }
+        return out;
     }
 
     private EndpointInfo extractEndpoints(Map<String, Object> p) {

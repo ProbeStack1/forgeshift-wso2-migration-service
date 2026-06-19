@@ -102,6 +102,138 @@ class ApiTranslatorTest {
         return new ApiTranslator(props, new ThrottlingTierResolver(null, props));
     }
 
+    private static ApiTranslator perResourceTranslator() {
+        MigrationProperties props = new MigrationProperties();
+        props.getDeck().setRouteGranularity(MigrationProperties.Deck.RouteGranularity.PER_RESOURCE);
+        return new ApiTranslator(props, new ThrottlingTierResolver(null, props));
+    }
+
+    private static DiscoverySnapshot perResourceApi(String backendUrl, List<Map<String, Object>> ops,
+                                                    Map<String, Object> extra) {
+        Map<String, Object> payload = new java.util.HashMap<>();
+        payload.put("name", "CustomAPI");
+        payload.put("version", "1.0.0");
+        payload.put("context", "/custom");
+        payload.put("endpointConfig", Map.of("production_endpoints", Map.of("url", backendUrl)));
+        if (ops != null) payload.put("operations", ops);
+        if (extra != null) payload.putAll(extra);
+        return DiscoverySnapshot.builder().sourceId("custom").sourceName("CustomAPI").sourceVersion("1.0.0")
+                .payload(payload).build();
+    }
+
+    @Test
+    void perResource_oneRoutePerOperation_stripPathFalse_replaceUriIsResource() {
+        TranslatedApi api = perResourceTranslator().translate(perResourceApi("https://backend.example.com",
+                List.of(Map.of("verb", "GET", "target", "/get"),
+                        Map.of("verb", "GET", "target", "/user-agent")), null));
+
+        assertEquals(2, api.getRoutes().size(), "one Kong route per WSO2 operation");
+        var get = api.getRoutes().stream().filter(r -> r.getPaths().contains("/custom/1.0.0/get")).findFirst().orElseThrow();
+        assertEquals(List.of("/custom/1.0.0/get"), get.getPaths());
+        assertFalse(get.getStrip_path(), "per-resource path INCLUDES the resource → strip_path must be false");
+        assertEquals(List.of("GET"), get.getMethods());
+        var rt = api.getRoutePlugins().get(get.getName()).stream()
+                .filter(pl -> pl.getName().equals("request-transformer")).findFirst().orElseThrow();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> replace = (Map<String, Object>) rt.getConfig().get("replace");
+        assertEquals("/get", replace.get("uri"), "forward only the resource so the SAME curl works as on WSO2");
+    }
+
+    @Test
+    void perResource_templatedTarget_regexPath_andCaptureInReplaceUri() {
+        TranslatedApi api = perResourceTranslator().translate(perResourceApi("https://backend.example.com",
+                List.of(Map.of("verb", "GET", "target", "/anything/{id}")), null));
+        var route = api.getRoutes().get(0);
+        // kongRoutePath regex-escapes the '.' in the version segment.
+        assertEquals(List.of("~/custom/1\\.0\\.0/anything/(?<id>[^/]+)$"), route.getPaths());
+        var rt = api.getRoutePlugins().get(route.getName()).stream()
+                .filter(pl -> pl.getName().equals("request-transformer")).findFirst().orElseThrow();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> replace = (Map<String, Object>) rt.getConfig().get("replace");
+        assertEquals("/anything/$(uri_captures.id)", replace.get("uri"));
+    }
+
+    @Test
+    void perResource_sharedTargetTwoVerbs_twoDistinctRoutesSamePath() {
+        TranslatedApi api = perResourceTranslator().translate(perResourceApi("https://backend.example.com",
+                List.of(Map.of("verb", "GET", "target", "/items"),
+                        Map.of("verb", "POST", "target", "/items")), null));
+        assertEquals(2, api.getRoutes().size());
+        long distinctNames = api.getRoutes().stream().map(r -> r.getName()).distinct().count();
+        assertEquals(2, distinctNames, "route names must embed the verb to stay unique");
+        assertTrue(api.getRoutes().stream().allMatch(r -> r.getPaths().equals(List.of("/custom/1.0.0/items"))));
+        assertTrue(api.getRoutes().stream().anyMatch(r -> r.getMethods().equals(List.of("GET"))));
+        assertTrue(api.getRoutes().stream().anyMatch(r -> r.getMethods().equals(List.of("POST"))));
+    }
+
+    @Test
+    void perResource_nonRootBackendPath_foldedIntoReplaceUri() {
+        TranslatedApi api = perResourceTranslator().translate(perResourceApi("https://b.example.com/api",
+                List.of(Map.of("verb", "GET", "target", "/get")), null));
+        var rt = api.getRoutePlugins().get(api.getRoutes().get(0).getName()).stream()
+                .filter(pl -> pl.getName().equals("request-transformer")).findFirst().orElseThrow();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> replace = (Map<String, Object>) rt.getConfig().get("replace");
+        assertEquals("/api/get", replace.get("uri"), "backend base path must be preserved like PREFIX mode");
+    }
+
+    @Test
+    void perResource_opPolicyHeaderTransform_mergedIntoRouteRequestTransformer_notShadowed() {
+        Map<String, Object> apiPolicies = Map.of("request", List.of(
+                Map.of("policyName", "addHeader",
+                        "parameters", Map.of("headerName", "X-Trace", "headerValue", "on"))));
+        TranslatedApi api = perResourceTranslator().translate(perResourceApi("https://b.example.com",
+                List.of(Map.of("verb", "GET", "target", "/get")),
+                Map.of("apiPolicies", apiPolicies)));
+        // No service-scoped request-transformer (it would be shadowed by the route-scoped one).
+        assertFalse(pluginNames(api).contains("request-transformer"),
+                "op-policy request-transformer must move to the route, not stay service-scoped");
+        var rt = api.getRoutePlugins().get(api.getRoutes().get(0).getName()).stream()
+                .filter(pl -> pl.getName().equals("request-transformer")).findFirst().orElseThrow();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> add = (Map<String, Object>) rt.getConfig().get("add");
+        @SuppressWarnings("unchecked")
+        List<String> headers = (List<String>) add.get("headers");
+        assertTrue(headers.contains("X-Trace:on"), "op-policy header transform must survive on the route");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> replace = (Map<String, Object>) rt.getConfig().get("replace");
+        assertEquals("/get", replace.get("uri"), "the same request-transformer also forwards the resource");
+    }
+
+    @Test
+    void perResource_corsEnabled_optionsAddedToEachRoute_forPreflight() {
+        TranslatedApi api = perResourceTranslator().translate(perResourceApi("https://b.example.com",
+                List.of(Map.of("verb", "GET", "target", "/get")),
+                Map.of("corsConfiguration", Map.of("corsConfigurationEnabled", true))));
+        assertTrue(pluginNames(api).contains("cors"), "cors stays service-scoped");
+        assertTrue(api.getRoutes().get(0).getMethods().contains("OPTIONS"),
+                "OPTIONS must be added so a CORS preflight matches a route");
+    }
+
+    @Test
+    void perResource_perOpTier_eachRouteGetsItsOwnRateLimit() {
+        TranslatedApi api = perResourceTranslator().translate(perResourceApi("https://b.example.com",
+                List.of(Map.of("verb", "GET", "target", "/get", "throttlingPolicy", "Bronze"),
+                        Map.of("verb", "POST", "target", "/post", "throttlingPolicy", "Gold")), null));
+        var getRoute = api.getRoutes().stream().filter(r -> r.getMethods().equals(List.of("GET"))).findFirst().orElseThrow();
+        var postRoute = api.getRoutes().stream().filter(r -> r.getMethods().equals(List.of("POST"))).findFirst().orElseThrow();
+        var getRl = api.getRoutePlugins().get(getRoute.getName()).stream()
+                .filter(pl -> pl.getName().equals("rate-limiting")).findFirst().orElseThrow();
+        var postRl = api.getRoutePlugins().get(postRoute.getName()).stream()
+                .filter(pl -> pl.getName().equals("rate-limiting")).findFirst().orElseThrow();
+        assertEquals(10, getRl.getConfig().get("minute"), "Bronze → 10 rpm on the GET route");
+        assertEquals(200, postRl.getConfig().get("minute"), "Gold → 200 rpm on the POST route");
+    }
+
+    @Test
+    void perResource_noOperations_fallsBackToSinglePrefixRoute() {
+        TranslatedApi api = perResourceTranslator().translate(
+                perResourceApi("https://b.example.com", null, null));
+        assertEquals(1, api.getRoutes().size());
+        assertEquals(List.of("/custom/1.0.0"), api.getRoutes().get(0).getPaths());
+        assertTrue(api.getRoutes().get(0).getStrip_path(), "no-ops fallback keeps the prefix strip_path=true route");
+    }
+
     private static DiscoverySnapshot apiWithSecurity(List<String> securityScheme) {
         return DiscoverySnapshot.builder()
                 .sourceId("apiSec").sourceName("SecAPI").sourceVersion("1.0.0")

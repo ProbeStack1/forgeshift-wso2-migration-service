@@ -216,6 +216,26 @@ public class MigrationProperties {
         private String formatVersion = "3.0";
         private boolean transform = true;
         /**
+         * How a WSO2 API's operations are mapped to Kong routes.
+         * <ul>
+         *   <li>{@code PREFIX} (default) — ONE route per API at {@code /<context>/<version>} with
+         *       {@code strip_path=true}; all operations collapse onto it and a single route-scoped
+         *       rate-limit uses the strictest per-op tier. Long-standing behaviour; byte-for-byte
+         *       unchanged.</li>
+         *   <li>{@code PER_RESOURCE} (opt-in) — ONE Kong route per WSO2 operation (verb + target),
+         *       so Kong's route list mirrors WSO2's operations one-to-one with per-operation method
+         *       and tier control. Per-resource routes use {@code strip_path=false} + a
+         *       {@code request-transformer} {@code replace.uri} to forward only the resource (folding
+         *       in the backend service path), exactly like {@code ApiProductTranslator}.</li>
+         * </ul>
+         * <b>Default {@code PREFIX}</b> — set in the field initializer (not only application.yml) so
+         * callers/tests that build {@code MigrationProperties} directly never regress.
+         */
+        private RouteGranularity routeGranularity = RouteGranularity.PREFIX;
+
+        /** Route-mapping strategy for {@link #routeGranularity}. */
+        public enum RouteGranularity { PREFIX, PER_RESOURCE }
+        /**
          * Whether to pin a deterministic {@code id} on every generated entity.
          * <p><b>Default {@code false}</b>: the files carry NO ids, so {@code deck gateway apply}
          * matches an existing Konnect entity by its unique name and UPDATES it (adopting the
