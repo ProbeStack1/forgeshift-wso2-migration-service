@@ -182,7 +182,7 @@ forgeshift:
       # Route mapping: PREFIX (default) = ONE route per API at /<context>/<version> (strip_path=true),
       # all operations collapsed. PER_RESOURCE = one Kong route per WSO2 operation (verb+target), with
       # strip_path=false + a request-transformer replace.uri forwarding only the resource. Opt-in only.
-      route-granularity: ${DECK_ROUTE_GRANULARITY:PREFIX}
+      route-granularity: ${DECK_ROUTE_GRANULARITY:PER_RESOURCE}
       # When false (default) the generated files carry NO entity ids, so `deck gateway apply`
       # matches existing Konnect entities by their unique name and UPDATES them (adopting the
       # real id) instead of erroring with "entity already exists" when a same-named entity has a
