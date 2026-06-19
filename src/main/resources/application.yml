@@ -194,6 +194,10 @@ forgeshift:
       # that subdir — so migrating one API can't be blocked by an unrelated API's leftover file.
       # Multi-API migrations keep the flat kong/<env>/ layout. Set false to force flat for everything.
       per-api-dir: ${DECK_PER_API_DIR:true}
+      # Multi-API (flat kong/<env>/) runs also remove stale migrator-generated *.yaml left at the env
+      # root by an earlier run/layout, which would otherwise duplicate an entity and fail decK
+      # validate ("entity already exists"). Only non-current, non-create-only YAML is removed.
+      reconcile-env-root: ${DECK_RECONCILE_ENV_ROOT:true}
       konnect-secret-name: ${DECK_KONNECT_SECRET_NAME:KONNECT_TOKEN}
       # TEST-ONLY: when true, the service sets a PLAINTEXT Actions variable named
       # {konnect-secret-name} on the repo (no libsodium needed) and the generated workflow

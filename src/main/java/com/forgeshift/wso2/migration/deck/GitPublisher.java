@@ -197,12 +197,21 @@ public class GitPublisher {
             // per-API directory, so a stale file would re-introduce entities the current bundle dropped
             // and collide ("entity already exists"). Only per-API subdirs are reconciled — never the
             // shared kong/<env> root — so other APIs' files are untouched.
+            int removed = 0;
+            // Per-API subdirs (single-API layout): remove any non-current file in the API's own dir.
             if (props.getDeck().isPerApiDir()) {
-                int removed = reconcilePerApiDirs(gh, owner, repoName, branch, files.keySet(),
-                        createOnlyPaths, message, cfg);
-                if (removed > 0) {
-                    log.info("Removed {} stale bundle file(s) so the pipeline applies only the current bundle.", removed);
-                }
+                removed += reconcileDirs(perApiDirs(files.keySet()), gh, owner, repoName, branch,
+                        files.keySet(), createOnlyPaths, false, message, cfg);
+            }
+            // Flat env root (multi-API layout): remove stale migrator-generated YAML left at kong/<env>
+            // by an earlier run/layout (old combined kong.yaml, differently-named per-API file) that
+            // would duplicate an entity and fail decK validate. YAML-only, non-current, non-create-only.
+            if (props.getDeck().isReconcileEnvRoot()) {
+                removed += reconcileDirs(envRootDirs(files.keySet()), gh, owner, repoName, branch,
+                        files.keySet(), createOnlyPaths, true, message, cfg);
+            }
+            if (removed > 0) {
+                log.info("Removed {} stale bundle file(s) so the pipeline applies only the current bundle.", removed);
             }
 
             // Trigger the pipeline EXPLICITLY (workflow_dispatch) so it picks up THIS migration's
@@ -373,15 +382,14 @@ public class GitPublisher {
     }
 
     /**
-     * Deletes files that live in the per-API directories this bundle writes into but are NOT part of
-     * the current bundle (and aren't create-only). Returns the count removed. Only directories of the
-     * form {@code kong/<env>/<api-slug>/} (≥ 2 path separators under {@code kong/}) are reconciled, so
-     * the shared {@code kong/<env>} root and other APIs' files are never deleted.
+     * Deletes files in {@code dirs} that are NOT part of the current bundle (and aren't create-only),
+     * returning the count removed. {@code yamlOnly} restricts deletion to {@code .yaml/.yml} (used for
+     * the shared env root so README/workflow/non-YAML are never touched); per-API subdirs pass false
+     * since the whole subdir belongs to that one API.
      */
-    private int reconcilePerApiDirs(WebClient gh, String owner, String repo, String branch,
-                                    Set<String> keep, Set<String> createOnlyPaths, String message,
-                                    MigrationProperties.Deck.Git cfg) {
-        Set<String> dirs = perApiDirs(keep);
+    private int reconcileDirs(Set<String> dirs, WebClient gh, String owner, String repo, String branch,
+                              Set<String> keep, Set<String> createOnlyPaths, boolean yamlOnly,
+                              String message, MigrationProperties.Deck.Git cfg) {
         int removed = 0;
         for (String dir : dirs) {
             for (Map<String, Object> item : listDir(gh, owner, repo, dir, branch)) {
@@ -389,6 +397,7 @@ public class GitPublisher {
                 String p = str(item.get("path"));
                 if (p == null || keep.contains(p)) continue;                       // current bundle file
                 if (createOnlyPaths != null && createOnlyPaths.contains(p)) continue;
+                if (yamlOnly && !(p.endsWith(".yaml") || p.endsWith(".yml"))) continue; // protect README/workflow/non-YAML
                 try {
                     deleteFile(gh, owner, repo, p, branch, str(item.get("sha")), message, cfg);
                     removed++;
@@ -409,6 +418,21 @@ public class GitPublisher {
             if (slash <= 0) continue;
             String dir = path.substring(0, slash);
             if (dir.startsWith("kong/") && dir.chars().filter(c -> c == '/').count() >= 2) {
+                dirs.add(dir);
+            }
+        }
+        return dirs;
+    }
+
+    /** The flat env-root kong directory ({@code kong/<env>}, exactly one separator under {@code kong/})
+     *  where MULTI-API bundles place their per-API files — distinct from the nested {@link #perApiDirs}. */
+    static Set<String> envRootDirs(Set<String> bundlePaths) {
+        Set<String> dirs = new LinkedHashSet<>();
+        for (String path : bundlePaths) {
+            int slash = path == null ? -1 : path.lastIndexOf('/');
+            if (slash <= 0) continue;
+            String dir = path.substring(0, slash);
+            if (dir.startsWith("kong/") && dir.chars().filter(c -> c == '/').count() == 1) {
                 dirs.add(dir);
             }
         }

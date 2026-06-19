@@ -47,4 +47,32 @@ class GitPublisherTest {
         assertThat(GitPublisher.perApiDirs(bundle))
                 .containsExactly("kong/prod/petstore-2-0");
     }
+
+    @Test
+    void envRootDirs_returnsTheFlatEnvRoot_forMultiApiBundles() {
+        // Flat (multi-API) layout: per-API files sit directly in kong/<env>. The env-root reconcile
+        // targets exactly that shared dir to clear stale leftovers (old combined kong.yaml etc.).
+        Set<String> bundle = Set.of(
+                "kong/dev/api-accountsapi-1-0-0.yaml",
+                "kong/dev/api-policyapi-1-0-0.yaml",
+                "kong/dev/consumers.yaml",
+                ".github/workflows/deploy-dev.yml",
+                "README.md");
+
+        assertThat(GitPublisher.envRootDirs(bundle)).containsExactly("kong/dev");
+        // and it must NOT classify the flat root as a per-API subdir
+        assertThat(GitPublisher.perApiDirs(bundle)).isEmpty();
+    }
+
+    @Test
+    void envRootDirs_isEmpty_forSingleApiSubdirBundles() {
+        // Single-API (per-api-dir) layout: files are nested under kong/<env>/<slug>/, so the env root
+        // is NOT reconciled (perApiDirs handles the subdir instead) — no risk to sibling APIs.
+        Set<String> bundle = Set.of(
+                "kong/dev/petstore-2-0/api-petstore-2-0.yaml",
+                "kong/dev/petstore-2-0/consumers.yaml");
+
+        assertThat(GitPublisher.envRootDirs(bundle)).isEmpty();
+        assertThat(GitPublisher.perApiDirs(bundle)).containsExactly("kong/dev/petstore-2-0");
+    }
 }

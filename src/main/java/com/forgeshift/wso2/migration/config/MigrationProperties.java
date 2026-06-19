@@ -244,6 +244,17 @@ public class MigrationProperties {
          * can't block the apply). Multi-API migrations keep the flat {@code kong/<env>/} layout.
          */
         private boolean perApiDir = true;
+        /**
+         * For MULTI-API (flat {@code kong/<env>/}) migrations, also delete stale migrator-generated
+         * {@code *.yaml} left at the env root by an earlier run/layout (e.g. an old combined
+         * {@code kong.yaml} or a differently-named per-API file). The pipeline applies the whole
+         * {@code kong/<env>/} dir, so such a leftover defines an entity a second time and makes
+         * {@code deck gateway validate/apply} fail "entity already exists". Only {@code .yaml/.yml}
+         * files NOT in the current bundle (and not create-only) are removed — never the workflow,
+         * README, or non-YAML files. <b>Note:</b> a partial multi-API re-run then drops the APIs it
+         * omits; use a single-API migration (per-api-dir) for true incremental changes.
+         */
+        private boolean reconcileEnvRoot = false;
         private String konnectSecretName = "KONNECT_TOKEN";
         /**
          * TEST-ONLY: deliver the Konnect token to the pipeline as a plaintext GitHub Actions
