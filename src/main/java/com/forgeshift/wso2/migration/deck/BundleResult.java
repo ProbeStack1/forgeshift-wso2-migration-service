@@ -38,6 +38,9 @@ public class BundleResult {
      *  ({@code …/migrations/{jobId}/deck-result}); null when no callback is configured. */
     @JsonIgnore
     private String callbackUrl;
+    /** The per-leg pipeline matrix baked into the workflow; null in legacy single-apply mode. */
+    @JsonIgnore
+    private List<DeckMatrixEntry> matrix;
 
     // ----- git auto-commit outcome (null when auto-commit is off/skipped) -----
     private String gitRepo;

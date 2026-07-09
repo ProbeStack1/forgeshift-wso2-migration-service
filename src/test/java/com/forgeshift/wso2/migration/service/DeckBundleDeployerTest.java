@@ -61,7 +61,7 @@ class DeckBundleDeployerTest {
                 .workflowFile("deploy-dev.yml")
                 .callbackUrl("http://x/migrations/job1/deck-result")
                 .build();
-        when(bundleBuilder.build(any(), any(), any(), any(), any(), any())).thenReturn(built);
+        when(bundleBuilder.build(any(), any(), any(), any(), any(), any(), any())).thenReturn(built);
 
         when(git.pushFiles(any(), any(), any(), any(), any(), any(), any())).thenReturn(GitPushResult.builder()
                 .pushed(true).repo("ProbeStack1/probestack1-kong-config").branch("main")

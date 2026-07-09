@@ -40,8 +40,10 @@ class BundleBuilderTest {
         String wf = files.get(".github/workflows/deploy-dev.yml");
         assertTrue(wf.contains("kong_config_path: kong/dev"));
         assertTrue(wf.contains("deck_mode: apply"));
-        assertTrue(wf.contains("control_plane_name: my-cp"));
-        assertTrue(wf.contains("konnect_addr: https://us.api.konghq.com"));
+        // Profile-sourced values are single-quoted: a CP named "Team: Payments" or "x #2"
+        // would otherwise break or silently truncate the workflow YAML.
+        assertTrue(wf.contains("control_plane_name: 'my-cp'"));
+        assertTrue(wf.contains("konnect_addr: 'https://us.api.konghq.com'"));
         // The callback URL is NOT baked into the (shared, static) workflow — it's a dispatch input,
         // and the per-job target URL is carried on the BundleResult for the dispatch call.
         assertTrue(wf.contains("result_callback_url: ${{ inputs.result_callback_url }}"),

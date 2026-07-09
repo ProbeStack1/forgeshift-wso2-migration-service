@@ -82,6 +82,7 @@ public class MigrationService {
     private final KongDeployer deployer;
     private final DeckBundleDeployer deckBundleDeployer;
     private final DependencyExpander dependencyExpander;
+    private final MigrationHistoryService migrationHistoryService;
     private final MigrationProperties props;
     @Qualifier("migrationExecutor")
     private final TaskExecutor migrationExecutor;
@@ -104,6 +105,16 @@ public class MigrationService {
         log.info("Migration job {} created (company={} tenant={} dryRun={} resourceTypes={})",
                 job.getId(), job.getCompanyName(), job.getWso2Tenant(), job.isDryRun(),
                 job.getResourceTypes());
+        // Per the org spec: the moment the UI triggers a migration with explicit API ids, create
+        // the per-API history rows (shared migrationId, unique trackingId each, IN_PROGRESS) —
+        // before any translation work starts. Bulk runs (no id filter) register right after
+        // translation instead, when the resource list is known.
+        if (!req.isDryRun() && req.getResourceFilters() != null) {
+            List<String> apiIds = req.getResourceFilters().get("apis");
+            if (apiIds != null && !apiIds.isEmpty()) {
+                migrationHistoryService.startRun(job, apiIds);
+            }
+        }
         String jobId = job.getId();
         migrationExecutor.execute(() -> runMigration(jobId, req));
         return job;
@@ -505,9 +516,14 @@ public class MigrationService {
             if (props.getDeck().isEnabled()) {
                 job.setState(MigrationState.GENERATING_BUNDLE);
                 jobRepository.save(job);
+                // Phase B of the history checklist: every resource of the run — including the
+                // dependencies translation discovered (consumers, certs, products, member APIs) —
+                // gets an IN_PROGRESS row + trackingId. The map feeds the bundle's pipeline matrix.
+                Map<String, String> tracking = migrationHistoryService.registerRun(job,
+                        translatedApis, translatedConsumers, translatedCertificates, translatedApiProducts);
                 BundleResult bundle = deckBundleDeployer.buildBundle(job, creds,
                         translatedApis, translatedConsumers, translatedCertificates,
-                        translatedApiProducts, translatedMediations);
+                        translatedApiProducts, translatedMediations, tracking);
                 recordProgress(job, "bundle", "COMPLETED",
                         job.getCounts().getTotalTranslated(),
                         job.getCounts().getTotalTranslated(), null);
@@ -522,24 +538,54 @@ public class MigrationService {
                         new ResourceCounters(0, 0, 0, 0, scopeSnapshots.size(), List.of()),
                         bundle);
                 job.getCounts().setTotalDeployed(job.getCounts().getTotalTranslated());
+                // A row whose trackingId rides on NO pipeline leg (resource produced no decK
+                // content: empty-PEM cert, product with all members missing) can never be
+                // reported — fail it now so run aggregation isn't blocked open.
+                if (bundle.getMatrix() != null) {
+                    java.util.Set<String> carried = new java.util.LinkedHashSet<>();
+                    for (com.forgeshift.wso2.migration.deck.DeckMatrixEntry leg : bundle.getMatrix()) {
+                        if (leg.tracking() == null) continue;
+                        for (String t : leg.tracking().split(",")) {
+                            if (StringUtils.hasText(t)) carried.add(t.trim());
+                        }
+                    }
+                    migrationHistoryService.failUncarried(job, carried);
+                }
                 // If the pipeline was DISPATCHED AND we have a callback URL, the GitHub Actions
-                // run will `deck gateway apply` and POST the result back to
-                // /migrations/{id}/deck-result. Don't claim COMPLETED yet — wait for that result.
-                // (Gate on dispatch, not on a commit sha: a re-run with no file change still has a
-                // pipeline to await even though nothing was committed.)
+                // run will `deck gateway apply` and POST results back per leg. Don't claim
+                // COMPLETED yet — wait. (Gate on dispatch, not on a commit sha: a re-run with no
+                // file change still has a pipeline to await even though nothing was committed.)
+                boolean pipelineIntended = props.getDeck().getGit().isEnabled()
+                        && StringUtils.hasText(props.getDeck().getCallbackBaseUrl());
                 boolean awaitPipeline = bundle.isDispatched()
                         && StringUtils.hasText(props.getDeck().getCallbackBaseUrl());
                 if (awaitPipeline) {
                     job.setState(MigrationState.DEPLOYING_TO_KONG);
                     jobRepository.save(job);
-                    log.info("Migration job {} DEPLOYING_TO_KONG — bundle pushed (sha {}), awaiting deck-apply callback",
+                    // Stamp git coords; rows stay IN_PROGRESS until each leg reports.
+                    migrationHistoryService.attachRunArtifacts(job, bundle, true);
+                    log.info("Migration job {} DEPLOYING_TO_KONG — bundle pushed (sha {}), awaiting per-leg callbacks",
                             job.getId(), bundle.getGitCommitSha());
+                } else if (pipelineIntended) {
+                    // The pipeline was supposed to run but was never dispatched (push/dispatch
+                    // failed). NOTHING was applied to Kong — claiming COMPLETED here would mark
+                    // every resource MIGRATED although none exists on the control plane.
+                    job.setState(MigrationState.FAILED);
+                    job.setLastError("bundle " + (bundle.getGitCommitSha() != null ? "committed but " : "")
+                            + "pipeline not dispatched: "
+                            + (bundle.getGitError() != null ? bundle.getGitError() : "see logs"));
+                    job.setCompletedAt(Instant.now());
+                    jobRepository.save(job);
+                    migrationHistoryService.attachRunArtifacts(job, bundle, true);   // stamp git only
+                    migrationHistoryService.finalizeRun(job, true, job.getLastError());
+                    log.error("Migration job {} FAILED — {}", job.getId(), job.getLastError());
                 } else {
-                    // No pipeline to wait for (git push didn't happen / no callback configured) —
-                    // the bundle itself is the deliverable.
+                    // No pipeline configured (git off / no callback) — the downloadable bundle
+                    // itself is the deliverable.
                     job.setState(MigrationState.COMPLETED);
                     job.setCompletedAt(Instant.now());
                     jobRepository.save(job);
+                    migrationHistoryService.attachRunArtifacts(job, bundle, false);
                     log.info("Migration job {} COMPLETED (decK bundle, no pipeline callback): {} -> {}",
                             job.getId(), bundle.getKongConfigPath(), bundle.getDownloadUrl());
                 }
@@ -700,11 +746,26 @@ public class MigrationService {
             log.info("Migration job {} COMPLETED: deployed={} unchanged={} failed={}",
                     job.getId(), totalDeployed, totalUnchanged, totalFailed);
 
+            // Per-resource checklist (migration_history): outcome is already known per resource here.
+            migrationHistoryService.recordDirectRun(job,
+                    translatedApis, failedApiIds,
+                    translatedConsumers, failedConsumerIds,
+                    translatedCertificates, failedCertIds,
+                    translatedApiProducts, failedProductIds);
+            // Trigger-time rows whose id never matched a discovery snapshot were not touched by
+            // recordDirectRun and would be wrongly repaired to MIGRATED from the COMPLETED job —
+            // fail them explicitly (mirrors the decK branch's stray reconcile).
+            migrationHistoryService.finalizeRun(job, true,
+                    "resource was not found in the discovery snapshot — re-run discovery and migrate again");
+
         } catch (Exception e) {
             log.error("Migration job {} FAILED: {}", jobId, e.getMessage(), e);
             job.setState(MigrationState.FAILED);
             job.setLastError(e.getMessage());
             jobRepository.save(job);
+            // Rows created at trigger time (Phase A) must not strand IN_PROGRESS when the run
+            // dies before its bundle/deploy step.
+            migrationHistoryService.finalizeRun(job, true, e.getMessage());
         }
     }
 

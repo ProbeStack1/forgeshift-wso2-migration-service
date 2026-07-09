@@ -27,11 +27,17 @@ import java.util.List;
 public class DeckApplyTimeoutSweeper {
 
     private final MigrationJobRepository jobRepository;
+    private final MigrationHistoryService migrationHistoryService;
     private final MigrationProperties props;
 
     /** Runs every minute; cheap (indexed query on state + updatedAt). */
     @Scheduled(fixedDelayString = "${forgeshift.migration.deck.apply-timeout-sweep-ms:60000}")
     public void sweep() {
+        // Flip migration_history rows stranded IN_PROGRESS (a status call that never arrived,
+        // job deleted mid-flight, or a finalize that hit a transient error) from their job's
+        // terminal state. Independent of the job timeout below — runs even when that's disabled.
+        migrationHistoryService.repairStuckInProgress();
+
         int timeoutMin = props.getDeck().getApplyTimeoutMinutes();
         if (timeoutMin <= 0) return;   // disabled
         Instant cutoff = Instant.now().minus(timeoutMin, ChronoUnit.MINUTES);
@@ -44,6 +50,8 @@ public class DeckApplyTimeoutSweeper {
             job.setLastError("No deck-apply callback received within " + timeoutMin
                     + " min — check the GitHub Actions pipeline run for this migration.");
             jobRepository.save(job);
+            // Don't leave this run's migration_history rows stuck in DEPLOYING.
+            migrationHistoryService.finalizeRun(job, true, job.getLastError());
             log.warn("Migration job {} → TIMED_OUT (no deck-apply callback after {} min)", job.getId(), timeoutMin);
         }
     }

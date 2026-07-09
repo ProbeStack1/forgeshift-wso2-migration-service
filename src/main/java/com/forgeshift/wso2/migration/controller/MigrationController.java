@@ -75,6 +75,7 @@ public class MigrationController {
     private final MigrationReportRepository reportRepository;
     private final MigrationProperties props;
     private final DeckResultMapper deckResultMapper;
+    private final com.forgeshift.wso2.migration.service.MigrationHistoryService migrationHistoryService;
 
     @PostMapping("/migrations")
     public ResponseEntity<?> start(@Valid @RequestBody StartMigrationRequest req,
@@ -305,6 +306,14 @@ public class MigrationController {
         }
         DeckResultMapper.Summary summary =
                 deckResultMapper.ingest(job, body.getKongState(), body.getApplyReport());
+        // Terminal guard: a late/duplicate POST (or a stale workflow still wired to this
+        // endpoint while the matrix flow owns the run) must not overwrite a settled outcome.
+        // Mappings above are still ingested — they're additive.
+        if (job.getState() != MigrationState.DEPLOYING_TO_KONG) {
+            log.info("Migration job {} deck-result ignored for state {} (already settled).",
+                    job.getId(), job.getState());
+            return ResponseEntity.ok(summary);
+        }
         // Surface the apply failures on the migration report so they're visible via
         // GET /migrations/{id}/report (instead of only in the pipeline's apply-report.json).
         reportRepository.findByMigrationJobId(id).ifPresent(report -> {
@@ -335,9 +344,92 @@ public class MigrationController {
             job.setLastError(null);
         }
         jobRepository.save(job);
+        // Flip this run's migration_history rows from IN_PROGRESS to their final status.
+        migrationHistoryService.finalizeRun(job, failed, job.getLastError());
         log.info("Migration job {} → {} via deck-result callback ({} apply error(s))",
                 job.getId(), job.getState(), summary.getErrors());
         return ResponseEntity.ok(summary);
+    }
+
+    /**
+     * Per-resource status callback (org spec). Each pipeline matrix leg POSTs its decK apply
+     * result here — the URL carries the run's {@code migrationId} and the leg's
+     * {@code trackingIds} — and the corresponding {@code migration_history} rows flip to
+     * MIGRATED / FAILED with Kong's response stored. When the LAST leg reports (no IN_PROGRESS
+     * rows remain), the job itself is flipped: FAILED if any resource failed, else COMPLETED.
+     * The pipeline must POST even on failure (callback step runs with {@code if: always()}).
+     */
+    @PostMapping("/wso2/migration-status")
+    public ResponseEntity<?> migrationStatus(@RequestParam("migrationId") String migrationId,
+                                             @RequestParam(value = "trackingIds", required = false) String trackingIds,
+                                             @RequestBody DeckResultRequest body) {
+        MigrationJob job = jobRepository.findById(migrationId).orElse(null);
+        if (job == null) {
+            return ResponseEntity.notFound().build();
+        }
+        // Rebuild entity_mappings from this leg's dump (each successive leg's dump is a superset,
+        // so per-leg ingest converges to the full mapping) and derive the leg's outcome.
+        DeckResultMapper.Summary summary =
+                deckResultMapper.ingest(job, body.getKongState(), body.getApplyReport());
+        boolean nonZeroExit = body.getApplyExitCode() != null && body.getApplyExitCode() != 0;
+        boolean failed = summary.getErrors() > 0 || nonZeroExit;
+        String error = null;
+        if (failed) {
+            java.util.List<String> d = summary.getFailedDetails();
+            error = !d.isEmpty()
+                    ? String.join("; ", d.subList(0, Math.min(3, d.size())))
+                    : (StringUtils.hasText(body.getApplyStderr())
+                        ? body.getApplyStderr().substring(0, Math.min(300, body.getApplyStderr().length()))
+                        : "deck gateway apply exited " + body.getApplyExitCode());
+        }
+
+        List<String> ids = trackingIds == null ? List.of()
+                : java.util.Arrays.stream(trackingIds.split(",")).filter(StringUtils::hasText).toList();
+        migrationHistoryService.reportStatus(job, ids, failed, kongResponseOf(body), error);
+
+        if (job.getState() == MigrationState.DEPLOYING_TO_KONG) {
+            // A failed UNTRACKED leg (e.g. a consumers.yaml holding only the anonymous consumer)
+            // has no row to carry its failure — pin it on the job so the run can't close clean.
+            if (failed && ids.isEmpty()) {
+                job.setLastError("decK apply failed for an untracked bundle file: "
+                        + (error != null ? error : "see the pipeline run"));
+            }
+            if (!migrationHistoryService.hasOpenRows(job.getId())) {
+                // Run-level aggregation: the last leg to report closes the run.
+                boolean anyFailed = migrationHistoryService.anyFailed(job.getId())
+                        || StringUtils.hasText(job.getLastError());
+                job.setState(anyFailed ? MigrationState.FAILED : MigrationState.COMPLETED);
+                job.setCompletedAt(java.time.Instant.now());
+                if (anyFailed && !StringUtils.hasText(job.getLastError())) {
+                    job.setLastError(error != null ? "decK apply failed: " + error
+                            : "one or more resources failed to apply — see migration_history");
+                }
+                log.info("Migration job {} → {} via migration-status callback (last leg reported)",
+                        job.getId(), job.getState());
+            }
+            // Save EVERY callback (even mid-run) — it refreshes updatedAt, which is the timeout
+            // sweeper's heartbeat. Without this a multi-leg sequential run outlives the apply
+            // timeout measured from the bundle push and gets falsely TIMED_OUT mid-flight.
+            jobRepository.save(job);
+        }
+        return ResponseEntity.ok(java.util.Map.of(
+                "migrationId", migrationId,
+                "trackingIds", ids,
+                "status", failed ? "FAILED" : "SUCCESS",
+                "jobState", job.getState().name()));
+    }
+
+    /** Compact Kong response stored per resource: apply outcome + report (service-side truncated). */
+    private static String kongResponseOf(DeckResultRequest body) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("applyExitCode=").append(body.getApplyExitCode());
+        if (body.getApplyReport() != null) {
+            sb.append("; applyReport=").append(body.getApplyReport());
+        }
+        if (StringUtils.hasText(body.getApplyStderr())) {
+            sb.append("; stderr=").append(body.getApplyStderr());
+        }
+        return sb.toString();
     }
 
     @GetMapping("/migrations")
@@ -363,7 +455,15 @@ public class MigrationController {
 
     @DeleteMapping("/migrations/{id}")
     public ResponseEntity<Void> delete(@PathVariable String id) {
-        if (!jobRepository.existsById(id)) return ResponseEntity.notFound().build();
+        MigrationJob job = jobRepository.findById(id).orElse(null);
+        if (job == null) return ResponseEntity.notFound().build();
+        // Deleting a job that's still awaiting its pipeline callback removes both things that
+        // could ever finalize its migration_history rows (the callback 404s, the timeout sweeper
+        // only sees existing jobs) — so fail those rows now instead of stranding them DEPLOYING.
+        if (job.getState() == MigrationState.DEPLOYING_TO_KONG) {
+            migrationHistoryService.finalizeRun(job, true,
+                    "migration job was deleted before the pipeline result arrived");
+        }
         jobRepository.deleteById(id);
         return ResponseEntity.noContent().build();
     }

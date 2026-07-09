@@ -37,24 +37,44 @@ public class BundleBuilder {
 
     public BundleResult build(String jobId, String env, String controlPlaneName,
                               String konnectAddr, Map<String, String> kongFiles) {
-        return build(jobId, env, controlPlaneName, konnectAddr, null, kongFiles);
+        return build(jobId, env, controlPlaneName, konnectAddr, null, kongFiles, null);
     }
 
     public BundleResult build(String jobId, String env, String controlPlaneName,
                               String konnectAddr, String konnectAccessToken,
                               Map<String, String> kongFiles) {
+        return build(jobId, env, controlPlaneName, konnectAddr, konnectAccessToken, kongFiles, null);
+    }
+
+    /**
+     * @param matrix per-file pipeline legs (path + trackingIds). When present AND a status
+     *               callback base is configured, the generated workflow runs one sequential
+     *               matrix leg per decK file, each reporting its own outcome (with its
+     *               trackingIds) to {@code POST /wso2/migration-status}. Null/empty → the
+     *               legacy single-apply workflow.
+     */
+    public BundleResult build(String jobId, String env, String controlPlaneName,
+                              String konnectAddr, String konnectAccessToken,
+                              Map<String, String> kongFiles, List<DeckMatrixEntry> matrix) {
         MigrationProperties.Deck d = props.getDeck();
         // Apply path = the deepest directory that holds every generated kong file. A per-API
         // (single-API) run lands under kong/<env>/<api>/ → apply just that; a flat run → kong/<env>.
         String configDir = commonDir(kongFiles, d.getKongConfigDirTemplate().replace("{env}", env));
         String wfPath = workflowPath(env);
+        String statusUrl = StringUtils.hasText(d.getCallbackBaseUrl())
+                ? d.getCallbackBaseUrl() + "/wso2/migration-status?migrationId=" + jobId + "&trackingIds="
+                : null;
 
-        // Full repo layout: the (static, dispatch-only) workflow + README FIRST, then the per-API
-        // kong files. Workflow-first means the dispatch-only caller is in place before any kong
+        // Full repo layout: the workflow + README FIRST, then the per-API kong files.
+        // Workflow-first means the dispatch-only caller is in place before any kong
         // file is committed, so a lingering old push-triggered workflow can't fire a stray run.
         Map<String, String> repoFiles = new LinkedHashMap<>();
-        repoFiles.put(wfPath, buildWorkflow(env, configDir, controlPlaneName, konnectAddr,
-                konnectAccessToken));
+        boolean matrixMode = matrix != null && !matrix.isEmpty() && statusUrl != null;
+        repoFiles.put(wfPath, matrixMode
+                ? buildMatrixWorkflow(jobId, env, controlPlaneName, konnectAddr,
+                        konnectAccessToken, matrix, statusUrl)
+                : buildWorkflow(env, configDir, controlPlaneName, konnectAddr,
+                        konnectAccessToken));
         repoFiles.put("README.md", buildReadme(jobId, env, controlPlaneName, configDir));
         repoFiles.putAll(kongFiles);
 
@@ -97,6 +117,7 @@ public class BundleBuilder {
                 .createOnlyPaths(List.of("README.md"))
                 .workflowFile("deploy-" + env + ".yml")
                 .callbackUrl(callbackUrl)
+                .matrix(matrixMode ? matrix : null)
                 .build();
     }
 
@@ -129,6 +150,65 @@ public class BundleBuilder {
         return dir.isEmpty() ? fallback : dir;
     }
 
+    /**
+     * Per-migration matrix workflow (the org spec's ci-cd.yml): {@code MIGRATION_ID} as a
+     * workflow variable and one SEQUENTIAL matrix leg per decK file, each leg carrying its
+     * {@code tracking} ids as matrix variables and reporting its own apply outcome to the
+     * migration-status endpoint (the callback URL embeds migrationId + that leg's trackingIds).
+     * Sequential ({@code max-parallel: 1}) keeps the shared-resources-first ordering; legs are
+     * listed shared-first by {@link DeckYamlBuilder#buildMatrix}. {@code fail-fast: false} so
+     * one API's failure still lets the remaining APIs migrate and report.
+     */
+    private String buildMatrixWorkflow(String jobId, String env, String controlPlaneName,
+                                       String konnectAddr, String konnectAccessToken,
+                                       List<DeckMatrixEntry> matrix, String statusUrl) {
+        MigrationProperties.Deck d = props.getDeck();
+        List<String> lines = new ArrayList<>(List.of(
+                "name: Deploy Kong (" + env + ")",
+                "# Generated PER MIGRATION by forgeshift-wso2-migration-service and dispatched via the",
+                "# GitHub API. Each matrix leg applies ONE decK file and POSTs its result to the",
+                "# migration-status endpoint with the leg's trackingIds, so every resource's outcome",
+                "# is recorded individually. Do NOT add a push trigger — that reintroduces stray runs.",
+                "on:",
+                "  workflow_dispatch:",
+                "    inputs:",
+                "      result_callback_url:",
+                "        description: 'Unused in matrix mode (kept for dispatch compatibility).'",
+                "        required: false",
+                "        default: ''",
+                "env:",
+                "  MIGRATION_ID: \"" + jobId + "\"",
+                "jobs:",
+                "  deploy:",
+                "    strategy:",
+                "      fail-fast: false",
+                "      max-parallel: 1",
+                "      matrix:",
+                "        include:"));
+        for (DeckMatrixEntry leg : matrix) {
+            lines.add("          - path: \"" + leg.path() + "\"");
+            lines.add("            tracking: \"" + (leg.tracking() == null ? "" : leg.tracking()) + "\"");
+        }
+        lines.addAll(List.of(
+                "    uses: " + d.getPipelineTemplateRef(),
+                "    permissions:",
+                "      contents: read",
+                "      id-token: write",
+                "    with:",
+                "      environment: " + yq(env),
+                "      kong_config_path: ${{ matrix.path }}",
+                "      control_plane_name: " + yq(controlPlaneName),
+                "      deck_mode: " + d.getDeckMode(),
+                "      deck_version: \"" + d.getDeckVersion() + "\"",
+                "      konnect_addr: " + yq(konnectAddr),
+                "      validate_only: false",
+                "      result_callback_url: " + yq(statusUrl + "${{ matrix.tracking }}")));
+        lines.add("    secrets:");
+        lines.add("      konnect_token: " + tokenRef(konnectAccessToken, d));
+        lines.add("");
+        return String.join("\n", lines);
+    }
+
     private String buildWorkflow(String env, String configDir,
                                  String controlPlaneName, String konnectAddr,
                                  String konnectAccessToken) {
@@ -156,25 +236,42 @@ public class BundleBuilder {
                 "      contents: read",
                 "      id-token: write",
                 "    with:",
-                "      environment: " + env,
+                "      environment: " + yq(env),
                 "      kong_config_path: " + configDir,
-                "      control_plane_name: " + controlPlaneName,
+                "      control_plane_name: " + yq(controlPlaneName),
                 "      deck_mode: " + d.getDeckMode(),
                 "      deck_version: \"" + d.getDeckVersion() + "\"",
-                "      konnect_addr: " + konnectAddr,
+                "      konnect_addr: " + yq(konnectAddr),
                 "      validate_only: false",
                 "      result_callback_url: ${{ inputs.result_callback_url }}"));
-        // Prefer the resolved profile token for the current test flow. Secret/variable
-        // references remain as fallback for environments that do not inline credentials.
-        String tokenRef = StringUtils.hasText(konnectAccessToken)
-                ? "'" + konnectAccessToken.replace("'", "''") + "'"
+        lines.add("    secrets:");
+        lines.add("      konnect_token: " + tokenRef(konnectAccessToken, d));
+        lines.add("");
+        return String.join("\n", lines);
+    }
+
+    /**
+     * Konnect-token reference for the generated workflow. Prefers the resolved profile token
+     * (current test flow); secret/variable references remain as fallback for environments that
+     * do not inline credentials.
+     */
+    private static String tokenRef(String konnectAccessToken, MigrationProperties.Deck d) {
+        return StringUtils.hasText(konnectAccessToken)
+                ? yq(konnectAccessToken)
                 : d.isKonnectTokenViaVariable()
                 ? "${{ vars." + d.getKonnectSecretName() + " }}"
                 : "${{ secrets." + d.getKonnectSecretName() + " }}";
-        lines.add("    secrets:");
-        lines.add("      konnect_token: " + tokenRef);
-        lines.add("");
-        return String.join("\n", lines);
+    }
+
+    /**
+     * Single-quote a YAML scalar, escaping embedded quotes. Konnect control-plane names (and
+     * other profile-sourced values) may contain YAML-significant characters — unquoted, a name
+     * like {@code Team: Payments} breaks the workflow parse and {@code probestack #2} silently
+     * truncates at the comment marker. GitHub still expands {@code $}{{ … }} expressions inside
+     * single-quoted values (expression evaluation happens after YAML parsing).
+     */
+    private static String yq(String value) {
+        return "'" + (value == null ? "" : value.replace("'", "''")) + "'";
     }
 
     private String buildReadme(String jobId, String env, String controlPlaneName, String configDir) {

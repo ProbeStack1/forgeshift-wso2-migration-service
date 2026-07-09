@@ -221,8 +221,11 @@ forgeshift:
       # This is what makes the job advance from DEPLOYING_TO_KONG → COMPLETED/FAILED, so it now
       # defaults to the public staging URL (override per-env with DECK_CALLBACK_BASE_URL).
       callback-base-url: ${DECK_CALLBACK_BASE_URL:${DECK_DOWNLOAD_BASE_URL:https://probestack.io/wso2/migration/v1}}
-      # No deck-apply callback within this many minutes → the job is marked TIMED_OUT.
-      apply-timeout-minutes: ${DECK_APPLY_TIMEOUT_MINUTES:2}
+      # No pipeline callback (deck-result OR per-leg migration-status — each leg's report
+      # refreshes the job heartbeat) within this many minutes → the job is marked TIMED_OUT.
+      # Matrix runs execute one GitHub Actions job PER decK file sequentially, so this must
+      # comfortably exceed one leg's worst-case duration (runner queue + checkout + deck apply).
+      apply-timeout-minutes: ${DECK_APPLY_TIMEOUT_MINUTES:10}
       storage: ${DECK_STORAGE:temp}
       # Auto-commit the generated files to the Kong-config repo (else just produce the bundle).
       # repo/branch/token come from the kong_konnect_profiles row when present, else from here.

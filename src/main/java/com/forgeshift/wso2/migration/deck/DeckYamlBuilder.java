@@ -198,6 +198,85 @@ public class DeckYamlBuilder {
         return files;
     }
 
+    /**
+     * The pipeline matrix for a bundle: one leg per generated decK file (only paths actually in
+     * {@code generatedPaths}), each carrying the trackingIds of the resources that file resolves.
+     * Mirrors {@link #buildFiles}' layout: shared files (consumers, ca-certificates) come FIRST so
+     * referenced consumers exist before API legs apply; each {@code api-<slug>.yaml} leg carries
+     * its API's trackingId plus the trackingId of any API Product whose routes are folded into
+     * that member API's file (a product spans every member leg it has routes in).
+     *
+     * @param tracking {@code "<resourceType>:<sourceId>" → trackingId} from the history service
+     */
+    public List<DeckMatrixEntry> buildMatrix(String env,
+                                             List<TranslatedApi> apis,
+                                             List<TranslatedConsumer> consumers,
+                                             List<TranslatedCertificate> certificates,
+                                             List<TranslatedApiProduct> products,
+                                             Map<String, String> tracking,
+                                             java.util.Set<String> generatedPaths) {
+        String dir = props.getDeck().getKongConfigDirTemplate().replace("{env}", env);
+        if (props.getDeck().isPerApiDir() && apis != null && apis.size() == 1
+                && apis.get(0).getService() != null) {
+            dir = dir + "/" + fileSlug(apis.get(0).getService().getName(), apis.get(0).getWso2SourceId());
+        }
+        List<DeckMatrixEntry> matrix = new ArrayList<>();
+
+        // Shared legs first: consumers (jwt/key-auth credentials the API routes authenticate
+        // against) and CA certificates, in the same file layout buildFiles produced.
+        addLeg(matrix, generatedPaths, dir + "/consumers.yaml", trackingIdsOf(
+                consumers == null ? List.of() : consumers.stream()
+                        .map(c -> tracking.get("applications:" + c.getWso2SourceId())).toList()));
+        addLeg(matrix, generatedPaths, dir + "/ca-certificates.yaml", trackingIdsOf(
+                certificates == null ? List.of() : certificates.stream()
+                        .map(c -> tracking.get("certificates:" + c.getWso2SourceId())).toList()));
+
+        // One leg per API file. A product's routes are folded into its member APIs' files, so the
+        // product's trackingId rides on every member leg that carries one of its routes.
+        Map<String, List<String>> productTrackingByMember = new LinkedHashMap<>();
+        if (products != null) {
+            for (TranslatedApiProduct p : products) {
+                String tid = tracking.get("apiproducts:" + p.getWso2SourceId());
+                if (tid == null || p.getRoutes() == null) continue;
+                p.getRoutes().stream()
+                        .map(TranslatedApiProduct.ProductRoute::getMemberApiId)
+                        .filter(java.util.Objects::nonNull)
+                        .distinct()
+                        .forEach(m -> productTrackingByMember
+                                .computeIfAbsent(m, k -> new ArrayList<>()).add(tid));
+            }
+        }
+        if (apis != null) {
+            for (TranslatedApi a : apis) {
+                if (a.getService() == null) continue;
+                List<String> ids = new ArrayList<>();
+                String own = tracking.get("apis:" + a.getWso2SourceId());
+                if (own != null) ids.add(own);
+                List<String> prods = productTrackingByMember.get(a.getWso2SourceId());
+                if (prods != null) prods.stream().distinct().forEach(ids::add);
+                addLeg(matrix, generatedPaths,
+                        dir + "/api-" + fileSlug(a.getService().getName(), a.getWso2SourceId()) + ".yaml",
+                        trackingIdsOf(ids));
+            }
+        }
+        return matrix;
+    }
+
+    private static void addLeg(List<DeckMatrixEntry> matrix, java.util.Set<String> generatedPaths,
+                               String path, String tracking) {
+        if (generatedPaths != null && generatedPaths.contains(path)) {
+            matrix.add(new DeckMatrixEntry(path, tracking));
+        }
+    }
+
+    /** Comma-joins the non-null trackingIds ("" when none — the leg still applies, just untracked). */
+    private static String trackingIdsOf(List<String> ids) {
+        return ids == null ? "" : ids.stream()
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .collect(java.util.stream.Collectors.joining(","));
+    }
+
     // ---------------- node builders ----------------
 
     /**

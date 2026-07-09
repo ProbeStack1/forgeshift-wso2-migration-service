@@ -12,6 +12,7 @@ import com.forgeshift.wso2.migration.translator.RiskScoringPluginBuilder;
 import com.forgeshift.wso2.migration.translator.SecureGatewayPluginBuilder;
 import com.forgeshift.wso2.migration.deck.BundleBuilder;
 import com.forgeshift.wso2.migration.deck.BundleResult;
+import com.forgeshift.wso2.migration.deck.DeckMatrixEntry;
 import com.forgeshift.wso2.migration.deck.DeckYamlBuilder;
 import com.forgeshift.wso2.migration.deck.GitPublisher;
 import com.forgeshift.wso2.migration.deck.GitPushResult;
@@ -64,6 +65,19 @@ public class DeckBundleDeployer {
                                     List<TranslatedApi> apis, List<TranslatedConsumer> consumers,
                                     List<TranslatedCertificate> certs, List<TranslatedApiProduct> products,
                                     List<TranslatedMediationPolicy> mediations) {
+        return buildBundle(job, creds, apis, consumers, certs, products, mediations, null);
+    }
+
+    /**
+     * @param tracking {@code "<resourceType>:<sourceId>" → trackingId} from the migration-history
+     *                 service. When present, the generated workflow runs one pipeline leg per decK
+     *                 file, each reporting its trackingIds' outcome to the migration-status endpoint.
+     */
+    public BundleResult buildBundle(MigrationJob job, KongKonnectCredentials creds,
+                                    List<TranslatedApi> apis, List<TranslatedConsumer> consumers,
+                                    List<TranslatedCertificate> certs, List<TranslatedApiProduct> products,
+                                    List<TranslatedMediationPolicy> mediations,
+                                    Map<String, String> tracking) {
         String env = props.getDeck().getEnvName();
         // Emit NO entity ids (see forgeshift.migration.deck.emit-entity-ids). `deck gateway apply`
         // then matches an already-migrated entity by its unique NAME and UPDATES it (adopting the
@@ -78,8 +92,17 @@ public class DeckBundleDeployer {
                 ? creds.getKonnectBaseUrl()
                 : props.getDeck().getKonnectAddr();
 
+        // Per-resource pipeline legs (org spec): one leg per decK file, tracking ids as matrix
+        // variables. Skipped for dry runs — their bundle is a preview, never dispatched.
+        List<DeckMatrixEntry> matrix = null;
+        if (tracking != null && !tracking.isEmpty() && !job.isDryRun()) {
+            matrix = yamlBuilder.buildMatrix(env, apis, consumers, certs, products,
+                    tracking, kongFiles.keySet());
+        }
+
         String token = creds == null ? null : creds.getKonnectAccessToken();
-        BundleResult bundle = bundleBuilder.build(job.getId(), env, cpName, addr, token, kongFiles);
+        BundleResult bundle = bundleBuilder.build(job.getId(), env, cpName, addr, token,
+                kongFiles, matrix);
 
         // Custom-plugin ASSETS (handler.lua + schema.lua) can't travel in the decK bundle — register
         // them on the control plane now, BEFORE the pipeline runs deck validate/apply (which would
