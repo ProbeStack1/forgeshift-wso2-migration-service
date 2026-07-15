@@ -31,6 +31,10 @@ public class MigrationHistoryCheckResult {
     private String sourceVersion;
     private String migrationId;
     private String requestTransactionId;
+
+    /** Discovery revision this resource was migrated from — same revision ⇒ nothing new to assess. */
+    private Integer sourceRevision;
+    private String sourceDiscoveryId;
     private String controlPlaneId;
     private String gitRepo;
     private String gitBranch;
@@ -56,6 +60,8 @@ public class MigrationHistoryCheckResult {
                 .sourceVersion(e.getSourceVersion())
                 .migrationId(e.getMigrationId())
                 .requestTransactionId(e.getRequestTransactionId())
+                .sourceRevision(e.getSourceRevision())
+                .sourceDiscoveryId(e.getSourceDiscoveryId())
                 .controlPlaneId(e.getControlPlaneId())
                 .gitRepo(e.getGitRepo())
                 .gitBranch(e.getGitBranch())

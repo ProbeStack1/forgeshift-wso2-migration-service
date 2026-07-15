@@ -452,6 +452,14 @@ public class MigrationHistoryService {
         row.setMigrationId(job.getId());
         row.setRequestTransactionId(job.getRequestTransactionId());
         row.setControlPlaneId(job.getControlPlaneId());
+        // Which discovery revision this run migrated FROM — drives the UI's re-assessment rule.
+        // Null at trigger time (Phase A, before loadSnapshots resolves it); filled by Phase B.
+        if (job.getSourceRevision() != null) {
+            row.setSourceRevision(job.getSourceRevision());
+        }
+        if (StringUtils.hasText(job.getSourceDiscoveryId())) {
+            row.setSourceDiscoveryId(job.getSourceDiscoveryId());
+        }
         if (bundle != null) {
             row.setGitRepo(bundle.getGitRepo());
             row.setGitBranch(bundle.getGitBranch());

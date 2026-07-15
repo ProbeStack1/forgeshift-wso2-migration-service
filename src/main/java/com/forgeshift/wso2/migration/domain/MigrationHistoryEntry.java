@@ -53,6 +53,15 @@ public class MigrationHistoryEntry {
     @Indexed private String migrationId;
     private String requestTransactionId;
 
+    /**
+     * The discovery revision this resource was migrated FROM. Lets the UI apply the
+     * re-assessment rule: same revision as this ⇒ nothing new to assess (block); a newer
+     * revision ⇒ the source may have changed, so allow re-assess + re-migrate.
+     */
+    private Integer sourceRevision;
+    /** The discovery this resource was migrated from (pairs with {@link #sourceRevision}). */
+    private String sourceDiscoveryId;
+
     /** Unique per resource per run — the pipeline reports this resource's outcome against it. */
     @Indexed private String trackingId;
 
