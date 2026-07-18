@@ -4,6 +4,8 @@ import com.forgeshift.wso2.migration.domain.MigrationJob;
 import com.forgeshift.wso2.migration.domain.MigrationReport;
 import com.forgeshift.wso2.migration.dto.Wso2MigrationHistoryDetailRecord;
 import com.forgeshift.wso2.migration.dto.Wso2MigrationHistoryDetailResponse;
+import com.forgeshift.wso2.migration.domain.EntityMapping;
+import com.forgeshift.wso2.migration.repository.EntityMappingRepository;
 import com.forgeshift.wso2.migration.repository.MigrationJobRepository;
 import com.forgeshift.wso2.migration.repository.MigrationReportRepository;
 import org.junit.jupiter.api.Test;
@@ -26,10 +28,16 @@ class Wso2MigrationHistoryDetailTest {
 
     private final MigrationJobRepository jobRepo = mock(MigrationJobRepository.class);
     private final MigrationReportRepository reportRepo = mock(MigrationReportRepository.class);
+    private final EntityMappingRepository entityRepo = mock(EntityMappingRepository.class);
     private final Wso2MigrationHistoryService service =
-            new Wso2MigrationHistoryService(jobRepo, reportRepo);
+            new Wso2MigrationHistoryService(jobRepo, reportRepo, entityRepo);
 
     private static final String TXN = "LCMO_probestack_carbon.super_20260715191806865";
+
+    {
+        // default: no entity mappings unless a test provides them
+        when(entityRepo.findByMigrationJobId(any())).thenReturn(List.of());
+    }
 
     private MigrationJob jobWith(MigrationJob.ResourceProgress... typeProgress) {
         var progress = new java.util.HashMap<String, MigrationJob.ResourceProgress>();
@@ -105,6 +113,37 @@ class Wso2MigrationHistoryDetailTest {
         assertThat(byName.get("BrokenApi").getStatus()).isEqualTo("FAILED");
         assertThat(byName.get("BrokenApi").getWarning()).contains("manual review");
         assertThat(byName.get("UnchangedApi").getStatus()).isEqualTo("UNCHANGED");
+    }
+
+    @Test
+    void detail_attachesKongEntityIdFromMappings_andGitCommitUrl() {
+        when(jobRepo.findByRequestTransactionId(TXN)).thenReturn(List.of(jobWith(
+                MigrationJob.ResourceProgress.builder().state("COMPLETED").deployed(1).build())));
+        when(reportRepo.findByMigrationJobId("job-1")).thenReturn(Optional.of(MigrationReport.builder()
+                .migrationJobId("job-1")
+                .gitRepo("acme/acme-kong-config").gitBranch("main")
+                .gitCommitSha("21b78e2").gitCommitUrl("https://github.com/acme/acme-kong-config/commit/21b78e2")
+                .outcomes(List.of(MigrationReport.ResourceOutcome.builder()
+                        .resourceType("apis").deployed(1).failedSourceIds(List.of()).build()))
+                .apiKongDetails(List.of(MigrationReport.ApiKongDetail.builder()
+                        .wso2SourceId("c1023ba3").wso2SourceName("BodyTransformApi")
+                        .kongServiceName("bodytransformapi-1-0-0").build()))
+                .build()));
+        // #2: this API became a Kong service + 1 route
+        when(entityRepo.findByMigrationJobId("job-1")).thenReturn(List.of(
+                EntityMapping.builder().wso2SourceId("c1023ba3").kongEntityType("ROUTE").kongUuid("route-uuid").build(),
+                EntityMapping.builder().wso2SourceId("c1023ba3").kongEntityType("SERVICE").kongUuid("svc-uuid-123").build()));
+
+        var apiRec = service.getMigrationHistoryDetail(TXN, null).getRecords().stream()
+                .filter(r -> "apis".equals(r.getResourceType())).findFirst().orElseThrow();
+
+        // #3 git commit link is on the record
+        assertThat(apiRec.getGitCommitUrl()).contains("/commit/21b78e2");
+        // #2 primary Kong id is the SERVICE (not the route), with the full entity count
+        var it = apiRec.getResources().get(0);
+        assertThat(it.getKongEntityId()).isEqualTo("svc-uuid-123");
+        assertThat(it.getKongEntityType()).isEqualTo("SERVICE");
+        assertThat(it.getKongEntityCount()).isEqualTo(2);
     }
 
     @Test

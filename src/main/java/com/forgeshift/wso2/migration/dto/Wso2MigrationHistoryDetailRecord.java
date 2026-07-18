@@ -46,6 +46,12 @@ public class Wso2MigrationHistoryDetailRecord {
 
     private Instant createdDateTime;
 
+    /** The decK bundle/commit this run produced — one click to the exact config in git. */
+    private String gitRepo;
+    private String gitBranch;
+    private String gitCommitSha;
+    private String gitCommitUrl;
+
     /**
      * Per-RESOURCE breakdown for this type (so the UI shows "BodyTransformApi" instead of "N/A"),
      * sourced from the report's per-API Kong details + dependency-migration names. Empty for older
@@ -66,6 +72,12 @@ public class Wso2MigrationHistoryDetailRecord {
         private String kongServiceName;
         private List<String> routePaths;
         private List<String> plugins;
+        /** The primary Kong entity id this WSO2 resource maps to (service uuid for an API,
+         *  consumer uuid for an application, …) + its type — from {@code entity_mappings}. */
+        private String kongEntityId;
+        private String kongEntityType;
+        /** How many Kong entities in total (service + routes + plugins + …) this resource produced. */
+        private int kongEntityCount;
         /** Migration warning/gap for this resource, when any (e.g. mutual-TLS manual review). */
         private String warning;
     }

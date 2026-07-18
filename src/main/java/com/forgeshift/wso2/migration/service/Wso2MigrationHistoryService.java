@@ -1,10 +1,12 @@
 package com.forgeshift.wso2.migration.service;
 
+import com.forgeshift.wso2.migration.domain.EntityMapping;
 import com.forgeshift.wso2.migration.domain.MigrationJob;
 import com.forgeshift.wso2.migration.domain.MigrationReport;
 import com.forgeshift.wso2.migration.dto.Wso2MigrationHistoryDetailRecord;
 import com.forgeshift.wso2.migration.dto.Wso2MigrationHistoryDetailResponse;
 import com.forgeshift.wso2.migration.dto.Wso2MigrationHistorySummaryItem;
+import com.forgeshift.wso2.migration.repository.EntityMappingRepository;
 import com.forgeshift.wso2.migration.repository.MigrationJobRepository;
 import com.forgeshift.wso2.migration.repository.MigrationReportRepository;
 import org.springframework.stereotype.Service;
@@ -30,12 +32,22 @@ public class Wso2MigrationHistoryService {
 
     private final MigrationJobRepository jobRepository;
     private final MigrationReportRepository reportRepository;
+    private final EntityMappingRepository entityMappingRepository;
 
     public Wso2MigrationHistoryService(MigrationJobRepository jobRepository,
-                                       MigrationReportRepository reportRepository) {
+                                       MigrationReportRepository reportRepository,
+                                       EntityMappingRepository entityMappingRepository) {
         this.jobRepository = jobRepository;
         this.reportRepository = reportRepository;
+        this.entityMappingRepository = entityMappingRepository;
     }
+
+    /** Kong entity types considered the "primary" mapping to show per WSO2 resource type. */
+    private static final Map<String, String> PRIMARY_KONG_TYPE = Map.of(
+            "apis", "SERVICE",
+            "applications", "CONSUMER",
+            "certificates", "CA_CERTIFICATE",
+            "apiproducts", "ROUTE");
 
     public List<Wso2MigrationHistorySummaryItem> getMigrationHistorySummary(
             String companyName, String wso2Tenant, String environment) {
@@ -114,17 +126,20 @@ public class Wso2MigrationHistoryService {
                     job.getResourceProgress() != null ? job.getResourceProgress() : Map.of();
 
             MigrationReport report = reportRepository.findByMigrationJobId(job.getId()).orElse(null);
+            // #2 id-mapping: every Kong entity this run produced, so each resource can show the
+            // real Kong uuid it became (not just the service name). Grouped by wso2SourceId.
+            Map<String, List<EntityMapping>> mappingsBySource = loadEntityMappings(job.getId());
 
             if (report != null && report.getOutcomes() != null && !report.getOutcomes().isEmpty()) {
                 // Prefer the report's per-type outcomes (they carry skipped + failedSourceIds).
                 for (MigrationReport.ResourceOutcome outcome : report.getOutcomes()) {
                     records.add(buildDetailRecord(job, outcome.getResourceType(),
-                            outcome, progress.get(outcome.getResourceType()), report));
+                            outcome, progress.get(outcome.getResourceType()), report, mappingsBySource));
                 }
             } else {
                 // No report yet — fall back to the job's per-type progress.
                 for (Map.Entry<String, MigrationJob.ResourceProgress> e : progress.entrySet()) {
-                    records.add(buildDetailRecord(job, e.getKey(), null, e.getValue(), report));
+                    records.add(buildDetailRecord(job, e.getKey(), null, e.getValue(), report, mappingsBySource));
                 }
             }
         }
@@ -132,11 +147,23 @@ public class Wso2MigrationHistoryService {
         return Wso2MigrationHistoryDetailResponse.builder().records(records).build();
     }
 
+    /** All Kong entities produced by a run, grouped by their WSO2 source id (best-effort). */
+    private Map<String, List<EntityMapping>> loadEntityMappings(String jobId) {
+        try {
+            return entityMappingRepository.findByMigrationJobId(jobId).stream()
+                    .filter(m -> m.getWso2SourceId() != null)
+                    .collect(Collectors.groupingBy(EntityMapping::getWso2SourceId));
+        } catch (Exception e) {
+            return Map.of();   // id-mapping is enrichment — never fail the detail call on it
+        }
+    }
+
     private Wso2MigrationHistoryDetailRecord buildDetailRecord(
             MigrationJob job, String resourceType,
             MigrationReport.ResourceOutcome outcome,
             MigrationJob.ResourceProgress progress,
-            MigrationReport report) {
+            MigrationReport report,
+            Map<String, List<EntityMapping>> mappingsBySource) {
 
         var builder = Wso2MigrationHistoryDetailRecord.builder()
                 .requestTransactionId(job.getRequestTransactionId())
@@ -146,6 +173,14 @@ public class Wso2MigrationHistoryService {
                 .controlPlaneId(job.getControlPlaneId())
                 .resourceType(resourceType)
                 .createdDateTime(job.getCreatedAt());
+
+        // #3 commit link — the decK bundle this run produced (run-level; echoed on each type record).
+        if (report != null) {
+            builder.gitRepo(report.getGitRepo())
+                    .gitBranch(report.getGitBranch())
+                    .gitCommitSha(report.getGitCommitSha())
+                    .gitCommitUrl(report.getGitCommitUrl());
+        }
 
         if (outcome != null) {
             builder.translated(outcome.getTranslated())
@@ -168,7 +203,7 @@ public class Wso2MigrationHistoryService {
                     .completedAt(progress.getCompletedAt());
         }
 
-        builder.resources(buildResourceItems(resourceType, outcome, report));
+        builder.resources(buildResourceItems(resourceType, outcome, report, mappingsBySource));
         return builder.build();
     }
 
@@ -180,10 +215,12 @@ public class Wso2MigrationHistoryService {
      * Returns an empty list for older runs whose report predates these fields.
      */
     private List<Wso2MigrationHistoryDetailRecord.ResourceItem> buildResourceItems(
-            String resourceType, MigrationReport.ResourceOutcome outcome, MigrationReport report) {
+            String resourceType, MigrationReport.ResourceOutcome outcome, MigrationReport report,
+            Map<String, List<EntityMapping>> mappingsBySource) {
         if (report == null) {
             return List.of();
         }
+        String primaryKongType = PRIMARY_KONG_TYPE.get(resourceType == null ? "" : resourceType.toLowerCase());
         java.util.Set<String> failedIds = outcome != null && outcome.getFailedSourceIds() != null
                 ? new java.util.HashSet<>(outcome.getFailedSourceIds()) : java.util.Set.of();
 
@@ -216,29 +253,50 @@ public class Wso2MigrationHistoryService {
         if ("apis".equalsIgnoreCase(resourceType) && report.getApiKongDetails() != null) {
             for (MigrationReport.ApiKongDetail a : report.getApiKongDetails()) {
                 if (a.getWso2SourceId() != null && !seen.add(a.getWso2SourceId())) continue;
-                items.add(Wso2MigrationHistoryDetailRecord.ResourceItem.builder()
+                var b = Wso2MigrationHistoryDetailRecord.ResourceItem.builder()
                         .sourceId(a.getWso2SourceId())
                         .sourceName(a.getWso2SourceName())
                         .status(statusFor(a.getWso2SourceId(), failedIds, alreadyInKongById))
                         .kongServiceName(a.getKongServiceName())
                         .routePaths(a.getRoutePaths())
                         .plugins(a.getPlugins())
-                        .warning(warningById.get(a.getWso2SourceId()))
-                        .build());
+                        .warning(warningById.get(a.getWso2SourceId()));
+                applyKongMapping(b, mappingsBySource.get(a.getWso2SourceId()), primaryKongType);
+                items.add(b.build());
             }
         }
 
         // Everything else (and any API only present in the dependency tree): name from depMigrations.
         for (Map.Entry<String, String> e : depNameById.entrySet()) {
             if (!seen.add(e.getKey())) continue;
-            items.add(Wso2MigrationHistoryDetailRecord.ResourceItem.builder()
+            var b = Wso2MigrationHistoryDetailRecord.ResourceItem.builder()
                     .sourceId(e.getKey())
                     .sourceName(e.getValue())
                     .status(statusFor(e.getKey(), failedIds, alreadyInKongById))
-                    .warning(warningById.get(e.getKey()))
-                    .build());
+                    .warning(warningById.get(e.getKey()));
+            applyKongMapping(b, mappingsBySource.get(e.getKey()), primaryKongType);
+            items.add(b.build());
         }
         return items;
+    }
+
+    /**
+     * Attach the primary Kong entity id (#2): from all entities this resource became, pick the one
+     * whose type matches its resource type (SERVICE for an API, CONSUMER for an app, …), else the
+     * first — plus the total entity count so the UI can say "→ service + 3 routes + 2 plugins".
+     */
+    private static void applyKongMapping(Wso2MigrationHistoryDetailRecord.ResourceItem.ResourceItemBuilder b,
+                                         List<EntityMapping> mappings, String primaryKongType) {
+        if (mappings == null || mappings.isEmpty()) {
+            return;
+        }
+        EntityMapping primary = mappings.stream()
+                .filter(m -> primaryKongType != null && primaryKongType.equalsIgnoreCase(m.getKongEntityType()))
+                .findFirst()
+                .orElse(mappings.get(0));
+        b.kongEntityId(primary.getKongUuid())
+                .kongEntityType(primary.getKongEntityType())
+                .kongEntityCount(mappings.size());
     }
 
     private static boolean resourceTypeMatches(String recordType, String depType) {
