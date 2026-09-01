@@ -235,7 +235,7 @@ forgeshift:
         # git_profiles row / kong_konnect_profiles git fields); self-skips with a WARN if absent.
         enabled: ${DECK_GIT_ENABLED:true}
         api-base-url: ${DECK_GIT_API_BASE_URL:https://api.github.com}
-        repo: ${DECK_GIT_REPO:migrationtestdeck/glowing-octo-computing-machine}
+        repo: ${DECK_GIT_REPO:}
         branch: ${DECK_GIT_BRANCH:main}
         token: ${DECK_GIT_TOKEN:}
         profiles-collection: ${DECK_GIT_PROFILES_COLLECTION:git_profiles}
