@@ -52,15 +52,37 @@ public class KongKonnectProfileReader {
                         .stream()
                         .filter(KongKonnectProfileReader::isActive)
                         .toList();
-                if (activeProfiles.size() == 1) {
+
+                // A company can hold several active profiles, and none of them
+                // is called "primary" - they are named after the company - so
+                // without the default flag two profiles matched nothing here
+                // and the migration fell through to static config.
+                doc = activeProfiles.stream()
+                        .filter(profile -> Boolean.TRUE.equals(profile.getBoolean("defaultProfile")))
+                        .findFirst()
+                        .orElse(null);
+                if (doc != null) {
+                    log.debug("Using default Kong Konnect profile '{}' for company={}",
+                            doc.getString("profileName"), companyName);
+                } else if (activeProfiles.size() == 1) {
                     doc = activeProfiles.get(0);
-                    log.info("No Kong Konnect profile named 'primary' for company={}; using sole ACTIVE profile '{}'",
+                    log.info("No default Kong Konnect profile for company={}; using sole ACTIVE profile '{}'",
                             companyName, doc.getString("profileName"));
+                } else if (activeProfiles.size() > 1) {
+                    log.warn("Company={} has {} active Kong Konnect profiles and none marked default; "
+                            + "set one in the Kong Konnect config or pass profileName",
+                            companyName, activeProfiles.size());
                 }
             }
             if (doc != null) {
                 log.debug("Using Kong Konnect profile (company={}, profileName={})", companyName, desiredName);
-                Document selectedControlPlane = selectedControlPlane(doc, requestedControlPlaneId);
+                // Unlike users, an API belongs to one control plane, so a
+                // profile holding several needs a default to fall back on
+                // rather than refusing the request.
+                String effectiveControlPlaneId = StringUtils.hasText(requestedControlPlaneId)
+                        ? requestedControlPlaneId
+                        : doc.getString("defaultControlPlane");
+                Document selectedControlPlane = selectedControlPlane(doc, effectiveControlPlaneId);
                 KongKonnectCredentials creds = KongKonnectCredentials.builder()
                         .source("profile")
                         .konnectBaseUrl(firstString(doc, "adminUrl", "konnectBaseUrl"))

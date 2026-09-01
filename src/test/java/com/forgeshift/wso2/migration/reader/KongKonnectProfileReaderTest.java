@@ -128,4 +128,69 @@ class KongKonnectProfileReaderTest {
         assertEquals("78ac8c8b-74a8-4338-875f-2ccaee19a52c", creds.getControlPlaneId());
         assertEquals("probestack-kong", creds.getControlPlaneName());
     }
+
+    @Test
+    void picksTheDefaultProfileWhenACompanyHasSeveral() {
+        // Profiles are named after the company, so nothing is ever called
+        // "primary". Before the default flag, two active profiles matched
+        // nothing here and the migration fell through to static config.
+        MongoTemplate mongo = mock(MongoTemplate.class);
+        Document staging = profile("probestack-kong-konnect-staging", false, null,
+                controlPlane("cp-staging", "staging"));
+        Document chosen = profile("probestack-kong-konnect", true, null,
+                controlPlane("cp-1234", "probestack-kong"));
+        when(mongo.findOne(any(Query.class), eq(Document.class), eq("kong_konnect_profiles"))).thenReturn(null);
+        // The by-name lookup misses - nothing is called "primary" - then the
+        // sweep returns every active profile for the company.
+        when(mongo.find(any(Query.class), eq(Document.class), eq("kong_konnect_profiles")))
+                .thenReturn(List.of())
+                .thenReturn(List.of(staging, chosen));
+
+        KongKonnectCredentials creds = new KongKonnectProfileReader(mongo, new MigrationProperties())
+                .resolve("probestack", null, null, null);
+
+        assertEquals("cp-1234", creds.getControlPlaneId());
+        assertEquals("profile", creds.getSource());
+    }
+
+    @Test
+    void usesTheProfileDefaultControlPlaneWhenTheRequestNamesNone() {
+        // An API lives in one control plane, so a profile holding several needs
+        // a default to fall back on rather than refusing the request.
+        MongoTemplate mongo = mock(MongoTemplate.class);
+        Document doc = profile("probestack-kong-konnect", true, "cp-5678",
+                controlPlane("cp-1234", "probestack-kong"),
+                controlPlane("cp-5678", "probestack-staging"));
+        when(mongo.findOne(any(Query.class), eq(Document.class), eq("kong_konnect_profiles"))).thenReturn(null);
+        when(mongo.find(any(Query.class), eq(Document.class), eq("kong_konnect_profiles")))
+                .thenReturn(List.of())
+                .thenReturn(List.of(doc));
+
+        KongKonnectCredentials creds = new KongKonnectProfileReader(mongo, new MigrationProperties())
+                .resolve("probestack", null, null, null);
+
+        assertEquals("cp-5678", creds.getControlPlaneId());
+        assertEquals("probestack-staging", creds.getControlPlaneName());
+    }
+
+    private static Document profile(String profileName, boolean isDefault, String defaultControlPlane,
+                                    Document... controlPlanes) {
+        Document doc = new Document()
+                .append("companyName", "probestack")
+                .append("profileName", profileName)
+                .append("status", "ACTIVE")
+                .append("adminUrl", "https://us.api.konghq.com")
+                .append("konnectPat", "kpat_test")
+                .append("region", "us")
+                .append("defaultProfile", isDefault)
+                .append("controlPlanes", List.of(controlPlanes));
+        if (defaultControlPlane != null) {
+            doc.append("defaultControlPlane", defaultControlPlane);
+        }
+        return doc;
+    }
+
+    private static Document controlPlane(String id, String name) {
+        return new Document().append("controlPlaneId", id).append("controlPlaneName", name);
+    }
 }
